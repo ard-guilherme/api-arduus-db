@@ -1,0 +1,9 @@
+fastapi==0.115.8
+pydantic==2.10.6
+pydantic-settings==2.7.1
+motor==3.7.0
+passlib==1.7.4
+structlog==25.1.0
+uvicorn==0.34.0
+python-dotenv==1.0.1
+email_validator==2.1.1
