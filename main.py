@@ -47,9 +47,11 @@ class FormSubmission(BaseModel):
     faturamento_empresa: Annotated[
         str,
         Field(
-            pattern=r'^(Até 1 milhão|1-5 milhões|5-10 milhões|Acima de 10 milhões)$',
+            min_length=2,
+            max_length=50,
             examples=["1-5 milhões"],
-            alias="revenue"
+            alias="revenue",
+            description="Faixa de faturamento da empresa em texto livre"
         )
     ]
     cargo_prospect: Annotated[
