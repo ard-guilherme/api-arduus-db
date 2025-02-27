@@ -1,17 +1,35 @@
 from fastapi import FastAPI, HTTPException, status, Depends, Request
-from pydantic import BaseModel, EmailStr, Field, ConfigDict, validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from pydantic_settings import BaseSettings
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Annotated, Optional
 import os
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-from passlib.context import CryptContext
 import structlog
 from datetime import datetime, timedelta
 
+"""
+API Arduus DB - Interface para o banco de dados MongoDB da Arduus
+
+Esta API fornece endpoints para interagir com o banco de dados MongoDB da Arduus.
+Atualmente, ela inclui funcionalidades para coleta de dados de formulários com
+validação rigorosa, autenticação via chave API, rate limiting e logs estruturados.
+"""
+
 # 1. Configurações e modelos primeiro
 class Settings(BaseSettings):
+    """
+    Configurações da aplicação carregadas de variáveis de ambiente ou arquivo .env
+    
+    Attributes:
+        MONGO_URI: URI de conexão com o MongoDB
+        DB_NAME: Nome do banco de dados
+        COLLECTION_NAME: Nome da coleção principal
+        CORS_ORIGINS: Origens permitidas para CORS (separadas por vírgula)
+        GCP_PROJECT: ID do projeto GCP (auto detectado no Cloud Run)
+        API_KEY: Chave de API para autenticação
+    """
     MONGO_URI: str = Field(..., alias="MONGO_URI")
     DB_NAME: str = "arduus_db"
     COLLECTION_NAME: str = "crm_db"
@@ -28,6 +46,18 @@ class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env", extra='ignore')
 
 class FormSubmission(BaseModel):
+    """
+    Modelo para validação dos dados do formulário
+    
+    Attributes:
+        nome_prospect: Nome completo do prospect (alias: full_name)
+        email_prospect: Email corporativo do prospect (alias: corporate_email)
+        whatsapp_prospect: Número de WhatsApp no formato internacional (alias: whatsapp)
+        empresa_prospect: Nome da empresa do prospect (alias: company)
+        faturamento_empresa: Faturamento da empresa (alias: revenue)
+        cargo_prospect: Cargo do prospect (alias: job_title)
+        api_key: Chave de API para autenticação
+    """
     nome_prospect: Annotated[
         str, 
         Field(min_length=3, max_length=100, examples=["Luan Detoni"], alias="full_name")
@@ -47,11 +77,9 @@ class FormSubmission(BaseModel):
     faturamento_empresa: Annotated[
         str,
         Field(
-            min_length=2,
-            max_length=50,
+            pattern=r'^(Até 1 milhão|1-5 milhões|5-10 milhões|Acima de 10 milhões)$',
             examples=["1-5 milhões"],
-            alias="revenue",
-            description="Faixa de faturamento da empresa em texto livre"
+            alias="revenue"
         )
     ]
     cargo_prospect: Annotated[
@@ -66,6 +94,15 @@ class FormSubmission(BaseModel):
 # 2. Função lifespan antes da criação do app
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Gerencia o ciclo de vida da aplicação
+    
+    Esta função é executada na inicialização e encerramento da aplicação.
+    Ela configura a conexão com o MongoDB e cria índices necessários.
+    
+    Args:
+        app: Instância da aplicação FastAPI
+    """
     settings = Settings()
     
     # Banco de dados
@@ -81,12 +118,13 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # Fechar conexão com o MongoDB ao encerrar a aplicação
     app.mongodb_client.close()
 
-# 3. Criação da instância app AGORA
+# 3. Criação da instância app
 app = FastAPI(
-    title="Form Submission API",
-    description="API para processamento de formulários corporativos",
+    title="API Arduus DB",
+    description="Interface para o banco de dados MongoDB da Arduus",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -100,11 +138,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuração de segurança
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 # Configuração de logging
 def setup_logging():
+    """
+    Configura o sistema de logging estruturado
+    
+    Utiliza a biblioteca structlog para gerar logs em formato JSON,
+    facilitando a integração com ferramentas de monitoramento.
+    """
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -122,14 +163,33 @@ def setup_logging():
 setup_logging()
 logger = structlog.get_logger()
 
-# Adicionar antes do endpoint
+# Rate Limiter para proteção contra abusos
 class RateLimiter:
+    """
+    Implementa rate limiting baseado em IP
+    
+    Limita o número de requisições que um IP pode fazer a um endpoint
+    em um determinado período de tempo.
+    
+    Attributes:
+        times: Número máximo de requisições permitidas
+        minutes: Período de tempo em minutos
+    """
     def __init__(self, times: int, minutes: int):
         self.times = times
         self.minutes = minutes
         self.window = timedelta(minutes=minutes)
     
     async def __call__(self, request: Request):
+        """
+        Verifica se o IP excedeu o limite de requisições
+        
+        Args:
+            request: Objeto Request do FastAPI
+            
+        Raises:
+            HTTPException: Se o limite de requisições for excedido
+        """
         client_ip = request.client.host
         now = datetime.utcnow()
         
@@ -172,15 +232,32 @@ class RateLimiter:
                 {"$inc": {"count": 1}, "$set": {"last_request": now}}
             )
 
-# Endpoint principal atualizado
+# Endpoint principal para submissão de formulário
 @app.post(
     "/submit-form/",
     dependencies=[Depends(RateLimiter(times=200, minutes=1))],
     status_code=status.HTTP_201_CREATED,
     summary="Envia dados do formulário",
-    response_description="ID do documento criado no MongoDB"
+    response_description="ID do documento criado no MongoDB",
+    tags=["Formulários"]
 )
 async def submit_form(form_data: FormSubmission):
+    """
+    Recebe dados de um formulário e armazena no MongoDB
+    
+    Este endpoint valida os dados recebidos, verifica a API key
+    e armazena os dados no MongoDB.
+    
+    Args:
+        form_data: Dados do formulário validados pelo modelo FormSubmission
+        
+    Returns:
+        dict: Mensagem de sucesso e ID do documento criado
+        
+    Raises:
+        HTTPException 401: Se a API key for inválida
+        HTTPException 500: Se ocorrer um erro ao processar o formulário
+    """
     if form_data.api_key != Settings().API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -194,13 +271,7 @@ async def submit_form(form_data: FormSubmission):
             "empresa_prospect": form_data.empresa_prospect,
             "email_prospect": form_data.email_prospect,
             "cargo_prospect": form_data.cargo_prospect,
-            "faturamento_empresa": form_data.faturamento_empresa,
-            "deal_id": "",
-            "calendar_event_id": "",
-            "calendar_event_datetimezone": "",
-            "is_fit": False,
-            "pipe_stage": "",
-            "spiced_stage": ""
+            "faturamento_empresa": form_data.faturamento_empresa
         }
         
         result = await app.collection.insert_one(document)
@@ -219,7 +290,7 @@ async def submit_form(form_data: FormSubmission):
             detail=f"Erro ao processar formulário: {str(e)}"
         )
 
-# Health Check com documentação melhorada
+# Health Check para monitoramento
 @app.get(
     "/health",
     tags=["Monitoramento"],
@@ -227,16 +298,12 @@ async def submit_form(form_data: FormSubmission):
     response_description="Status online"
 )
 async def health_check() -> dict[str, str]:
+    """
+    Verifica se a API está online
+    
+    Este endpoint é utilizado para monitoramento da saúde da aplicação.
+    
+    Returns:
+        dict: Status da API
+    """
     return {"status": "online"}
-
-# Função para criar admin padrão
-async def create_default_admin():
-    admin_user = await app.db.users.find_one({"username": "admin"})
-    if not admin_user:
-        hashed_password = pwd_context.hash("admin123")
-        await app.db.users.insert_one({
-            "username": "admin",
-            "hashed_password": hashed_password,
-            "disabled": False
-        })
-        logger.info("Default admin user created")
