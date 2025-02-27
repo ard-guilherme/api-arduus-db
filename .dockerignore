@@ -15,10 +15,15 @@ __pycache__/
 .vscode/
 .idea/
 
-# Outros
-.DS_Store
+# Arquivos Git
+.git/
+.gitignore
 
 # Arquivos de teste
 test_api.sh
 test_api.ps1
 curl_examples.md
+test_main.py
+
+# Outros
+.DS_Store 
