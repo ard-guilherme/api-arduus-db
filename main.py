@@ -77,7 +77,6 @@ class FormSubmission(BaseModel):
     faturamento_empresa: Annotated[
         str,
         Field(
-            pattern=r'^(Até 1 milhão|1-5 milhões|5-10 milhões|Acima de 10 milhões)$',
             examples=["1-5 milhões"],
             alias="revenue"
         )

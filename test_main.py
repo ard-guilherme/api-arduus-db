@@ -206,21 +206,20 @@ def test_submit_form_invalid_data(client, mock_mongodb, mock_settings):
     mock_mongodb.insert_one.assert_not_called()
 
 # Teste com faturamento inválido
-def test_submit_form_invalid_revenue(client, mock_mongodb, mock_settings):
+def test_submit_form_any_revenue(client, mock_mongodb, mock_settings):
     """
-    Testa a submissão de formulário com faturamento inválido
+    Testa a submissão de formulário com qualquer valor de faturamento
     
-    Verifica se o endpoint /submit-form/ rejeita requisições
-    com valor de faturamento fora dos valores permitidos,
-    retornando status 422.
+    Verifica se o endpoint /submit-form/ aceita requisições
+    com qualquer valor de faturamento, retornando status 201.
     """
-    # Dados de teste com faturamento inválido
+    # Dados de teste com faturamento personalizado
     test_data = {
         "full_name": "Teste da Silva",
         "corporate_email": "teste@example.com",
         "whatsapp": "+5511987654321",
         "company": "Empresa Teste",
-        "revenue": "Valor Inválido",  # Faturamento inválido
+        "revenue": "Valor Personalizado",  # Faturamento personalizado
         "job_title": "Diretor",
         "api_key": "test_api_key"
     }
@@ -229,7 +228,13 @@ def test_submit_form_invalid_revenue(client, mock_mongodb, mock_settings):
     response = client.post("/submit-form/", json=test_data)
     
     # Verificar resposta
-    assert response.status_code == 422  # Erro de validação
+    assert response.status_code == 201
+    assert "document_id" in response.json()
+    assert response.json()["message"] == "Formulário recebido com sucesso"
     
-    # Verificar que o MongoDB não foi chamado
-    mock_mongodb.insert_one.assert_not_called() 
+    # Verificar se o MongoDB foi chamado corretamente
+    mock_mongodb.insert_one.assert_called_once()
+    
+    # Verificar documento enviado
+    called_args = mock_mongodb.insert_one.call_args[0][0]
+    assert called_args["faturamento_empresa"] == "Valor Personalizado" 

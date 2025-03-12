@@ -4,7 +4,7 @@
 
 # Configurações
 $apiUrl = "http://localhost:8000"
-$apiKey = "sua_chave_api" # Substitua pela sua chave API real
+$apiKey = "ARci43B+1cYfm+5XY82YJ8ME8g3paWyT7AoUnO7VrGw=" # Substitua pela sua chave API real
 
 # Função para exibir mensagens formatadas
 function Write-ColorMessage {
@@ -132,11 +132,11 @@ function Test-InvalidFormData {
     }
 }
 
-# Função para testar o envio de formulário com faturamento inválido
+# Função para testar o envio de formulário com faturamento anteriormente inválido
 function Test-InvalidRevenue {
-    Write-ColorMessage "TESTANDO FATURAMENTO INVÁLIDO" -Type "HEADER"
+    Write-ColorMessage "TESTANDO FATURAMENTO ANTERIORMENTE INVÁLIDO" -Type "HEADER"
     
-    Write-ColorMessage "Enviando requisição POST com faturamento inválido"
+    Write-ColorMessage "Enviando requisição POST com faturamento anteriormente inválido"
     
     $body = @{
         full_name = "Teste da Silva"
@@ -150,16 +150,73 @@ function Test-InvalidRevenue {
     
     try {
         $response = Invoke-RestMethod -Uri "$apiUrl/submit-form/" -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
-        Write-ColorMessage "Teste falhou: Deveria ter retornado erro 422" -Type "ERROR"
+        Write-ColorMessage "Teste de faturamento anteriormente inválido passou (status 201 Created)" -Type "SUCCESS"
+        Write-ColorMessage "Resposta: $($response | ConvertTo-Json -Compress)"
     }
     catch {
         $statusCode = $_.Exception.Response.StatusCode.value__
+        Write-ColorMessage "Teste de faturamento anteriormente inválido falhou com status $statusCode (esperado 201)" -Type "ERROR"
+        Write-ColorMessage "Erro: $($_.Exception.Message)"
+    }
+}
+
+# Função para testar o envio de formulário com valor personalizado de faturamento
+function Test-CustomRevenueFormSubmission {
+    Write-ColorMessage "TESTANDO ENVIO DE FORMULÁRIO COM VALOR PERSONALIZADO DE FATURAMENTO" -Type "HEADER"
+    
+    Write-ColorMessage "Enviando requisição POST para $apiUrl/submit-form/"
+    
+    $body = @{
+        full_name = "Teste da Silva"
+        corporate_email = "teste@example.com"
+        whatsapp = "+5511987654321"
+        company = "Empresa Teste"
+        revenue = "Valor Totalmente Personalizado"
+        job_title = "Diretor"
+        api_key = $apiKey
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri "$apiUrl/submit-form/" -Method Post -Body ($body | ConvertTo-Json) -ContentType "application/json" -ErrorAction Stop
+        Write-ColorMessage "Formulário com valor personalizado de faturamento enviado com sucesso (status 201)" -Type "SUCCESS"
+        Write-ColorMessage "Resposta: $($response | ConvertTo-Json -Compress)"
+    }
+    catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        Write-ColorMessage "Envio de formulário com valor personalizado de faturamento falhou com status $statusCode" -Type "ERROR"
+        Write-ColorMessage "Erro: $($_.Exception.Message)"
+        
         if ($statusCode -eq 422) {
-            Write-ColorMessage "Teste de faturamento inválido passou (status 422 Unprocessable Entity)" -Type "SUCCESS"
+            Write-ColorMessage "Detalhes da validação: $($_.ErrorDetails.Message)" -Type "ERROR"
         }
-        else {
-            Write-ColorMessage "Teste de faturamento inválido falhou com status $statusCode (esperado 422)" -Type "ERROR"
-        }
+    }
+}
+
+# Função para testar o envio de formulário com faturamento personalizado
+function Test-CustomRevenue {
+    Write-ColorMessage "TESTANDO FATURAMENTO PERSONALIZADO" -Type "HEADER"
+    
+    Write-ColorMessage "Enviando requisição POST com faturamento personalizado"
+    
+    $body = @{
+        full_name = "Teste da Silva"
+        corporate_email = "teste@empresa.com"
+        whatsapp = "+5511987654321"
+        company = "Empresa Teste"
+        revenue = "Valor Personalizado"
+        job_title = "Diretor"
+        api_key = $apiKey
+    } | ConvertTo-Json
+    
+    try {
+        $response = Invoke-RestMethod -Uri "$apiUrl/submit-form/" -Method Post -Body $body -ContentType "application/json" -ErrorAction Stop
+        Write-ColorMessage "Teste de faturamento personalizado passou (status 201 Created)" -Type "SUCCESS"
+        Write-ColorMessage "Resposta: $($response | ConvertTo-Json -Compress)"
+    }
+    catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        Write-ColorMessage "Teste de faturamento personalizado falhou com status $statusCode (esperado 201)" -Type "ERROR"
+        Write-ColorMessage "Erro: $($_.Exception.Message)"
     }
 }
 
@@ -176,6 +233,8 @@ Write-Host "3. Testar apenas envio de formulário válido"
 Write-Host "4. Testar apenas API key inválida"
 Write-Host "5. Testar apenas dados de formulário inválidos"
 Write-Host "6. Testar apenas faturamento inválido"
+Write-Host "7. Testar envio de formulário com valor personalizado de faturamento"
+Write-Host "8. Testar faturamento personalizado"
 Write-Host "0. Sair"
 
 $option = Read-Host "Opção"
@@ -187,12 +246,16 @@ switch ($option) {
         Test-InvalidApiKey
         Test-InvalidFormData
         Test-InvalidRevenue
+        Test-CustomRevenueFormSubmission
+        Test-CustomRevenue
     }
     "2" { Test-HealthCheck }
     "3" { Test-ValidFormSubmission }
     "4" { Test-InvalidApiKey }
     "5" { Test-InvalidFormData }
     "6" { Test-InvalidRevenue }
+    "7" { Test-CustomRevenueFormSubmission }
+    "8" { Test-CustomRevenue }
     "0" { 
         Write-ColorMessage "Saindo..."
         exit 
