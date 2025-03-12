@@ -237,4 +237,44 @@ def test_submit_form_any_revenue(client, mock_mongodb, mock_settings):
     
     # Verificar documento enviado
     called_args = mock_mongodb.insert_one.call_args[0][0]
-    assert called_args["faturamento_empresa"] == "Valor Personalizado" 
+    assert called_args["faturamento_empresa"] == "Valor Personalizado"
+
+# Teste com número de WhatsApp formatado
+def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
+    """
+    Testa a submissão de formulário com número de WhatsApp formatado
+    
+    Verifica se o endpoint /submit-form/ aceita requisições
+    com número de WhatsApp contendo formatação (espaços, hífens),
+    limpa o número corretamente e retorna status 201.
+    """
+    # Dados de teste com número de WhatsApp formatado
+    test_data = {
+        "full_name": "Teste da Silva",
+        "corporate_email": "teste@example.com",
+        "whatsapp": "+55 11 98765-4321",  # Número formatado
+        "company": "Empresa Teste",
+        "revenue": "1-5 milhões",
+        "job_title": "Diretor",
+        "api_key": "test_api_key"
+    }
+    
+    # Enviar requisição
+    response = client.post("/submit-form/", json=test_data)
+    
+    # Verificar resposta
+    assert response.status_code == 201
+    assert "document_id" in response.json()
+    assert response.json()["message"] == "Formulário recebido com sucesso"
+    
+    # Verificar se o MongoDB foi chamado corretamente
+    mock_mongodb.insert_one.assert_called_once()
+    
+    # Verificar documento enviado
+    called_args = mock_mongodb.insert_one.call_args[0][0]
+    assert called_args["nome_prospect"] == "Teste da Silva"
+    assert called_args["email_prospect"] == "teste@example.com"
+    assert called_args["whatsapp_prospect"] == "+5511987654321"  # Número limpo
+    assert called_args["empresa_prospect"] == "Empresa Teste"
+    assert called_args["faturamento_empresa"] == "1-5 milhões"
+    assert called_args["cargo_prospect"] == "Diretor" 

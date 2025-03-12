@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
 from datetime import datetime, timedelta
+import re
 
 """
 API Arduus DB - Interface para o banco de dados MongoDB da Arduus
@@ -68,7 +69,7 @@ class FormSubmission(BaseModel):
     ]
     whatsapp_prospect: Annotated[
         str, 
-        Field(pattern=r'^\+?[1-9]\d{1,14}$', examples=["+554799019123"], alias="whatsapp")
+        Field(examples=["+554799019123"], alias="whatsapp")
     ]
     empresa_prospect: Annotated[
         str, 
@@ -231,6 +232,26 @@ class RateLimiter:
                 {"$inc": {"count": 1}, "$set": {"last_request": now}}
             )
 
+# Função para limpar o número de WhatsApp
+def clean_whatsapp_number(number: str) -> str:
+    """
+    Remove caracteres não numéricos do número de WhatsApp
+    
+    Esta função remove espaços, hífens e outros caracteres não numéricos
+    do número de WhatsApp, mantendo apenas o sinal de + no início, se existir.
+    
+    Args:
+        number: Número de WhatsApp com possível formatação
+        
+    Returns:
+        str: Número de WhatsApp limpo, contendo apenas dígitos e possivelmente um + no início
+    """
+    # Preserva o sinal de + no início, se existir
+    if number.startswith('+'):
+        return '+' + re.sub(r'\D', '', number[1:])
+    else:
+        return re.sub(r'\D', '', number)
+
 # Endpoint principal para submissão de formulário
 @app.post(
     "/submit-form/",
@@ -264,8 +285,18 @@ async def submit_form(form_data: FormSubmission):
         )
     
     try:
+        # Limpa e valida o número de WhatsApp
+        clean_number = clean_whatsapp_number(form_data.whatsapp_prospect)
+        
+        # Verifica se o número limpo está em um formato válido
+        if not re.match(r'^\+?[1-9]\d{1,14}$', clean_number):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Número de WhatsApp inválido mesmo após limpeza. Deve conter apenas dígitos e possivelmente um + no início."
+            )
+        
         document = {
-            "whatsapp_prospect": form_data.whatsapp_prospect,
+            "whatsapp_prospect": clean_number,
             "nome_prospect": form_data.nome_prospect,
             "empresa_prospect": form_data.empresa_prospect,
             "email_prospect": form_data.email_prospect,
