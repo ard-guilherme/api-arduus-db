@@ -77,9 +77,7 @@ class SalesBuilderStatusChecker:
         
         # Log para garantir que as configurações da Evolution API estão corretas
         logger.info(
-            "Evolution API inicializada",
-            subdomain=self.evo_api.evo_subdomain,
-            instance=self.evo_api.evo_instance
+            f"Evolution API inicializada - subdomain: {self.evo_api.evo_subdomain}, instance: {self.evo_api.evo_instance}"
         )
         
         # Configurar headers para as requisições

@@ -50,6 +50,11 @@ class EvolutionAPI:
             logging.warning(f"Variáveis de ambiente da Evolution API ausentes: {', '.join(missing)}. Algumas funcionalidades podem não estar disponíveis.")
         
         try:
+            # Definir uma chave de API OpenAI padrão se não estiver definida
+            if not os.getenv("OPENAI_API_KEY"):
+                os.environ["OPENAI_API_KEY"] = "sk-dummy-key-for-initialization"
+                logging.warning("Usando chave de API OpenAI fictícia. Algumas funcionalidades podem não estar disponíveis.")
+            
             self.client = OpenAI()
         except Exception as e:
             logging.error(f"Erro ao inicializar o cliente OpenAI: {e}")
