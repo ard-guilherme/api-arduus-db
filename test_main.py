@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch, MagicMock
 import os
 import json
-from main import app, RateLimiter
+from main import app, RateLimiter, call_sales_builder_api
 
 """
 Testes automatizados para a API Arduus DB
@@ -81,6 +81,24 @@ def mock_mongodb():
         
         yield mock_collection
 
+# Mock para a API Sales Builder
+@pytest.fixture
+def mock_sales_builder_api():
+    """
+    Mock para a API Sales Builder
+    
+    Este fixture cria um mock para a função call_sales_builder_api
+    para evitar chamadas reais à API durante os testes.
+    
+    Returns:
+        AsyncMock: Mock da função call_sales_builder_api
+    """
+    with patch("main.call_sales_builder_api") as mock_api:
+        # Configurar o mock para retornar um valor padrão
+        mock_api.return_value = {"task_id": "mock_task_id"}
+        
+        yield mock_api
+
 # Cliente de teste
 @pytest.fixture
 def client():
@@ -109,13 +127,13 @@ def test_health_check(client):
     assert response.json() == {"status": "online"}
 
 # Teste do endpoint de submissão de formulário com API key válida
-def test_submit_form_valid(client, mock_mongodb, mock_settings):
+def test_submit_form_valid(client, mock_mongodb, mock_settings, mock_sales_builder_api):
     """
     Testa a submissão de formulário com dados válidos
     
     Verifica se o endpoint /submit-form/ aceita dados válidos,
     retorna status 201 e a mensagem correta, e se os dados são
-    corretamente enviados para o MongoDB.
+    corretamente enviados para o MongoDB e à API Sales Builder.
     """
     # Dados de teste
     test_data = {
@@ -134,7 +152,9 @@ def test_submit_form_valid(client, mock_mongodb, mock_settings):
     # Verificar resposta
     assert response.status_code == 201
     assert "document_id" in response.json()
+    assert "sales_builder_task_id" in response.json()
     assert response.json()["message"] == "Formulário recebido com sucesso"
+    assert response.json()["sales_builder_task_id"] == "mock_task_id"
     
     # Verificar se o MongoDB foi chamado corretamente
     mock_mongodb.insert_one.assert_called_once()
@@ -149,6 +169,16 @@ def test_submit_form_valid(client, mock_mongodb, mock_settings):
     assert called_args["cargo_prospect"] == "Diretor"
     assert called_args["pipe_stage"] == "fit_to_rapport"
     assert called_args["spiced_stage"] == "P1"
+    
+    # Verificar se a API Sales Builder foi chamada corretamente
+    mock_sales_builder_api.assert_called_once()
+    api_call_args = mock_sales_builder_api.call_args[0][0]
+    assert api_call_args["nome_prospect"] == "Teste da Silva"
+    assert api_call_args["email_prospect"] == "teste@example.com"
+    assert api_call_args["whatsapp_prospect"] == "5511987654321"
+    assert api_call_args["empresa_prospect"] == "Empresa Teste"
+    assert api_call_args["faturamento_empresa"] == "1-5 milhões"
+    assert api_call_args["cargo_prospect"] == "Diretor"
 
 # Teste com API key inválida
 def test_submit_form_invalid_api_key(client, mock_mongodb, mock_settings):
@@ -208,7 +238,7 @@ def test_submit_form_invalid_data(client, mock_mongodb, mock_settings):
     mock_mongodb.insert_one.assert_not_called()
 
 # Teste com faturamento inválido
-def test_submit_form_any_revenue(client, mock_mongodb, mock_settings):
+def test_submit_form_any_revenue(client, mock_mongodb, mock_settings, mock_sales_builder_api):
     """
     Testa a submissão de formulário com qualquer valor de faturamento
     
@@ -232,7 +262,9 @@ def test_submit_form_any_revenue(client, mock_mongodb, mock_settings):
     # Verificar resposta
     assert response.status_code == 201
     assert "document_id" in response.json()
+    assert "sales_builder_task_id" in response.json()
     assert response.json()["message"] == "Formulário recebido com sucesso"
+    assert response.json()["sales_builder_task_id"] == "mock_task_id"
     
     # Verificar se o MongoDB foi chamado corretamente
     mock_mongodb.insert_one.assert_called_once()
@@ -242,9 +274,14 @@ def test_submit_form_any_revenue(client, mock_mongodb, mock_settings):
     assert called_args["faturamento_empresa"] == "Valor Personalizado"
     assert called_args["pipe_stage"] == "fit_to_rapport"
     assert called_args["spiced_stage"] == "P1"
+    
+    # Verificar se a API Sales Builder foi chamada corretamente
+    mock_sales_builder_api.assert_called_once()
+    api_call_args = mock_sales_builder_api.call_args[0][0]
+    assert api_call_args["faturamento_empresa"] == "Valor Personalizado"
 
 # Teste com número de WhatsApp formatado
-def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
+def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings, mock_sales_builder_api):
     """
     Testa a submissão de formulário com número de WhatsApp formatado
     
@@ -269,7 +306,9 @@ def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
     # Verificar resposta
     assert response.status_code == 201
     assert "document_id" in response.json()
+    assert "sales_builder_task_id" in response.json()
     assert response.json()["message"] == "Formulário recebido com sucesso"
+    assert response.json()["sales_builder_task_id"] == "mock_task_id"
     
     # Verificar se o MongoDB foi chamado corretamente
     mock_mongodb.insert_one.assert_called_once()
@@ -283,4 +322,47 @@ def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
     assert called_args["faturamento_empresa"] == "1-5 milhões"
     assert called_args["cargo_prospect"] == "Diretor"
     assert called_args["pipe_stage"] == "fit_to_rapport"
-    assert called_args["spiced_stage"] == "P1" 
+    assert called_args["spiced_stage"] == "P1"
+    
+    # Verificar se a API Sales Builder foi chamada corretamente
+    mock_sales_builder_api.assert_called_once()
+    api_call_args = mock_sales_builder_api.call_args[0][0]
+    assert api_call_args["whatsapp_prospect"] == "5511987654321" 
+
+# Teste com falha na chamada à API Sales Builder
+def test_submit_form_sales_builder_api_failure(client, mock_mongodb, mock_settings, mock_sales_builder_api):
+    """
+    Testa a submissão de formulário quando a chamada à API Sales Builder falha
+    
+    Verifica se o endpoint /submit-form/ ainda retorna status 201 mesmo quando
+    a chamada à API Sales Builder falha, incluindo uma mensagem de erro na resposta.
+    """
+    # Configurar o mock para lançar uma exceção
+    mock_sales_builder_api.side_effect = Exception("API Sales Builder indisponível")
+    
+    # Dados de teste
+    test_data = {
+        "full_name": "Teste da Silva",
+        "corporate_email": "teste@example.com",
+        "whatsapp": "+5511987654321",
+        "company": "Empresa Teste",
+        "revenue": "1-5 milhões",
+        "job_title": "Diretor",
+        "api_key": "test_api_key"
+    }
+    
+    # Enviar requisição
+    response = client.post("/submit-form/", json=test_data)
+    
+    # Verificar resposta
+    assert response.status_code == 201
+    assert "document_id" in response.json()
+    assert "sales_builder_error" in response.json()
+    assert "Formulário recebido com sucesso" in response.json()["message"]
+    assert "API Sales Builder indisponível" in response.json()["sales_builder_error"]
+    
+    # Verificar se o MongoDB foi chamado corretamente
+    mock_mongodb.insert_one.assert_called_once()
+    
+    # Verificar se a API Sales Builder foi chamada
+    mock_sales_builder_api.assert_called_once() 

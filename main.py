@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import structlog
 from datetime import datetime, timedelta
 import re
+import httpx
 
 """
 API Arduus DB - Interface para o banco de dados MongoDB da Arduus
@@ -30,6 +31,8 @@ class Settings(BaseSettings):
         CORS_ORIGINS: Origens permitidas para CORS (separadas por vírgula)
         GCP_PROJECT: ID do projeto GCP (auto detectado no Cloud Run)
         API_KEY: Chave de API para autenticação
+        SALES_BUILDER_API_URL: URL da API Sales Builder
+        SALES_BUILDER_API_KEY: Chave de API para autenticação na API Sales Builder
     """
     MONGO_URI: str = Field(..., alias="MONGO_URI")
     DB_NAME: str = "arduus_db"
@@ -43,6 +46,8 @@ class Settings(BaseSettings):
         description="ID do projeto GCP (auto detectado no Cloud Run)"
     )
     API_KEY: str = Field(..., alias="API_KEY")
+    SALES_BUILDER_API_URL: str = "https://sales-builder.ornexus.com/kickoff"
+    SALES_BUILDER_API_KEY: str = "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX"
 
     model_config = ConfigDict(env_file=".env", extra='ignore')
 
@@ -249,6 +254,56 @@ def clean_whatsapp_number(number: str) -> str:
     # Remove todos os caracteres não numéricos, incluindo o sinal de +
     return re.sub(r'\D', '', number)
 
+# Função para chamar a API Sales Builder
+async def call_sales_builder_api(lead_data: dict) -> dict:
+    """
+    Chama a API Sales Builder para iniciar um processo após a inserção do lead no CRM
+    
+    Esta função envia os dados do lead para a API Sales Builder, que iniciará um processo
+    de interação com o lead.
+    
+    Args:
+        lead_data: Dados do lead inserido no MongoDB
+        
+    Returns:
+        dict: Resposta da API Sales Builder
+        
+    Raises:
+        Exception: Se ocorrer um erro ao chamar a API
+    """
+    settings = Settings()
+    
+    # Preparar os dados para a API Sales Builder
+    payload = {
+        "nome_prospect": lead_data["nome_prospect"],
+        "empresa_prospect": lead_data["empresa_prospect"],
+        "cargo_prospect": lead_data["cargo_prospect"],
+        "email_prospect": lead_data["email_prospect"],
+        "whatsapp_prospect": lead_data["whatsapp_prospect"],
+        "faturamento_prospect": lead_data["faturamento_empresa"],
+        "nome_vendedor": "Vagner Campos",
+        "interacao": "Iniciar a conversa com lead à partir do P1"
+    }
+    
+    # Configurar os headers
+    headers = {
+        "Authorization": f"Bearer {settings.SALES_BUILDER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Fazer a chamada à API
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            settings.SALES_BUILDER_API_URL,
+            json=payload,
+            headers=headers
+        )
+        
+        # Verificar se a chamada foi bem-sucedida
+        response.raise_for_status()
+        
+        return response.json()
+
 # Endpoint principal para submissão de formulário
 @app.post(
     "/submit-form/",
@@ -303,14 +358,30 @@ async def submit_form(form_data: FormSubmission):
             "spiced_stage": "P1"
         }
         
+        # Inserir o lead no MongoDB
         result = await app.collection.insert_one(document)
         
         logger.info("Form submitted", document_id=str(result.inserted_id))
         
-        return {
-            "message": "Formulário recebido com sucesso",
-            "document_id": str(result.inserted_id)
-        }
+        # Chamar a API Sales Builder
+        try:
+            sales_builder_response = await call_sales_builder_api(document)
+            logger.info("Sales Builder API called successfully", response=sales_builder_response)
+            
+            return {
+                "message": "Formulário recebido com sucesso",
+                "document_id": str(result.inserted_id),
+                "sales_builder_task_id": sales_builder_response.get("task_id")
+            }
+        except Exception as api_error:
+            # Registrar o erro, mas não falhar a requisição
+            logger.error("Error calling Sales Builder API", error=str(api_error))
+            
+            return {
+                "message": "Formulário recebido com sucesso, mas houve um erro ao iniciar o processo de interação",
+                "document_id": str(result.inserted_id),
+                "sales_builder_error": str(api_error)
+            }
     
     except Exception as e:
         logger.error("Form submission error", error=str(e))
