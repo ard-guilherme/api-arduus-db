@@ -147,6 +147,8 @@ def test_submit_form_valid(client, mock_mongodb, mock_settings):
     assert called_args["empresa_prospect"] == "Empresa Teste"
     assert called_args["faturamento_empresa"] == "1-5 milhões"
     assert called_args["cargo_prospect"] == "Diretor"
+    assert called_args["pipe_stage"] == "fit_to_rapport"
+    assert called_args["spiced_stage"] == "P1"
 
 # Teste com API key inválida
 def test_submit_form_invalid_api_key(client, mock_mongodb, mock_settings):
@@ -238,6 +240,8 @@ def test_submit_form_any_revenue(client, mock_mongodb, mock_settings):
     # Verificar documento enviado
     called_args = mock_mongodb.insert_one.call_args[0][0]
     assert called_args["faturamento_empresa"] == "Valor Personalizado"
+    assert called_args["pipe_stage"] == "fit_to_rapport"
+    assert called_args["spiced_stage"] == "P1"
 
 # Teste com número de WhatsApp formatado
 def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
@@ -277,4 +281,6 @@ def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
     assert called_args["whatsapp_prospect"] == "5511987654321"  # Número limpo sem o +
     assert called_args["empresa_prospect"] == "Empresa Teste"
     assert called_args["faturamento_empresa"] == "1-5 milhões"
-    assert called_args["cargo_prospect"] == "Diretor" 
+    assert called_args["cargo_prospect"] == "Diretor"
+    assert called_args["pipe_stage"] == "fit_to_rapport"
+    assert called_args["spiced_stage"] == "P1" 

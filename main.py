@@ -298,7 +298,9 @@ async def submit_form(form_data: FormSubmission):
             "empresa_prospect": form_data.empresa_prospect,
             "email_prospect": form_data.email_prospect,
             "cargo_prospect": form_data.cargo_prospect,
-            "faturamento_empresa": form_data.faturamento_empresa
+            "faturamento_empresa": form_data.faturamento_empresa,
+            "pipe_stage": "fit_to_rapport",
+            "spiced_stage": "P1"
         }
         
         result = await app.collection.insert_one(document)
