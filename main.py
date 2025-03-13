@@ -10,6 +10,7 @@ import structlog
 from datetime import datetime, timedelta
 import re
 import httpx
+import asyncio
 
 """
 API Arduus DB - Interface para o banco de dados MongoDB da Arduus
@@ -319,6 +320,9 @@ async def call_sales_builder_api(lead_data: dict) -> dict:
         
         return response_data
 
+# Importar o módulo de verificação de status do Sales Builder
+from sales_builder_status_checker import process_sales_builder_task
+
 # Endpoint principal para submissão de formulário
 @app.post(
     "/submit-form/",
@@ -336,6 +340,9 @@ async def submit_form(form_data: FormSubmission):
     e armazena os dados no MongoDB. Se o número de WhatsApp já existir
     na coleção, retorna uma mensagem informando que o lead já existe
     e não insere um novo documento nem chama a API Sales Builder.
+    
+    Após inserir os dados no MongoDB e chamar a API Sales Builder,
+    inicia o processamento da task para envio de mensagens via WhatsApp.
     
     Args:
         form_data: Dados do formulário validados pelo modelo FormSubmission
@@ -407,10 +414,17 @@ async def submit_form(form_data: FormSubmission):
                 task_id=sales_builder_response.get("task_id")
             )
             
+            # Iniciar o processamento da task em segundo plano
+            task_id = sales_builder_response.get("task_id")
+            if task_id:
+                logger.info(f"Iniciando processamento da task {task_id} em segundo plano")
+                # Criar uma task em segundo plano para processar a resposta
+                asyncio.create_task(process_sales_builder_task(task_id))
+            
             return {
                 "message": "Formulário recebido com sucesso",
                 "document_id": str(result.inserted_id),
-                "sales_builder_task_id": sales_builder_response.get("task_id")
+                "sales_builder_task_id": task_id
             }
         except Exception as api_error:
             # Registrar o erro, mas não falhar a requisição
