@@ -20,6 +20,11 @@ class EvolutionAPI:
             settings: Opcional. Instância de Settings da aplicação principal.
                      Se não fornecido, carrega as configurações das variáveis de ambiente.
         """
+        # Inicializar com valores padrão
+        self.evo_subdomain = None
+        self.evo_instance = None
+        self.evo_token = None
+        
         if settings:
             # Usar configurações da aplicação principal
             self.evo_subdomain = settings.EVO_SUBDOMAIN
@@ -27,30 +32,35 @@ class EvolutionAPI:
             self.evo_token = settings.EVO_TOKEN
         else:
             # Carregar das variáveis de ambiente
+            load_dotenv()  # Garantir que as variáveis de ambiente sejam carregadas
             self.evo_subdomain = os.getenv("EVO_SUBDOMAIN")
             self.evo_instance = os.getenv("EVO_INSTANCE")
             self.evo_token = os.getenv("EVO_TOKEN")
             
-            # Log para depuração
-            logging.info(f"Configurações da Evolution API: subdomain={self.evo_subdomain}, instance={self.evo_instance}")
-            
-            # Verificar se as configurações estão presentes
-            if not all([self.evo_subdomain, self.evo_instance, self.evo_token]):
-                missing = []
-                if not self.evo_subdomain: missing.append("EVO_SUBDOMAIN")
-                if not self.evo_instance: missing.append("EVO_INSTANCE")
-                if not self.evo_token: missing.append("EVO_TOKEN")
-                logging.error(f"Variáveis de ambiente da Evolution API ausentes: {', '.join(missing)}")
+        # Log para depuração
+        logging.info(f"Configurações da Evolution API: subdomain={self.evo_subdomain}, instance={self.evo_instance}")
+        
+        # Verificar se as configurações estão presentes
+        self.is_configured = all([self.evo_subdomain, self.evo_instance, self.evo_token])
+        if not self.is_configured:
+            missing = []
+            if not self.evo_subdomain: missing.append("EVO_SUBDOMAIN")
+            if not self.evo_instance: missing.append("EVO_INSTANCE")
+            if not self.evo_token: missing.append("EVO_TOKEN")
+            logging.warning(f"Variáveis de ambiente da Evolution API ausentes: {', '.join(missing)}. Algumas funcionalidades podem não estar disponíveis.")
         
         try:
             self.client = OpenAI()
         except Exception as e:
             logging.error(f"Erro ao inicializar o cliente OpenAI: {e}")
+            self.client = None
             
+        # Configurar headers apenas se tivermos um token
         self.headers = {
-            "apikey": self.evo_token,
             "Content-Type": "application/json"
         }
+        if self.evo_token:
+            self.headers["apikey"] = self.evo_token
 
 
     def estimate_typing_time(self, text, typing_speed=41.4):

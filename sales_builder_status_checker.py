@@ -4,6 +4,7 @@ import logging
 import time
 import sys
 import os
+import re
 from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 
@@ -138,53 +139,55 @@ class SalesBuilderStatusChecker:
     
     async def process_task_response(self, task_data: Dict[str, Any]) -> bool:
         """
-        Processa a resposta da task e envia as mensagens via WhatsApp.
+        Processa a resposta de uma task do Sales Builder.
         
         Args:
-            task_data: Dados da resposta da task
+            task_data: Dados da task a ser processada
             
         Returns:
             bool: True se o processamento foi bem-sucedido, False caso contrário
         """
         try:
-            # Verificar se a task foi completada com sucesso
-            state = task_data.get("state")
-            if state != "COMPLETED":
-                logger.warning(f"Task não foi completada. Estado: {state}")
+            # Verificar se a Evolution API está configurada
+            if not hasattr(self.evo_api, 'is_configured') or not self.evo_api.is_configured:
+                logger.warning("Evolution API não está configurada corretamente. Não é possível enviar mensagens.")
                 return False
-            
-            # Extrair dados da resposta
-            result = task_data.get("result", {})
-            messages = result.get("msg_resposta", [])
-            whatsapp_number = result.get("whatsapp_prospect")
-            
-            if not messages:
-                logger.warning("Nenhuma mensagem encontrada na resposta")
-                return False
-            
-            if not whatsapp_number:
-                logger.warning("Número de WhatsApp não encontrado na resposta")
-                return False
-            
-            logger.info(f"Enviando {len(messages)} mensagens para o número {whatsapp_number}")
-            
-            # Enviar mensagens via WhatsApp
-            for i, message in enumerate(messages):
-                logger.info(f"Enviando mensagem {i+1}/{len(messages)}: {message[:50]}...")
-                response = self.evo_api.send_text_message(number=whatsapp_number, text=message)
                 
-                if response:
-                    logger.info(f"Mensagem {i+1} enviada com sucesso")
-                else:
-                    logger.error(f"Falha ao enviar mensagem {i+1}")
+            # Extrair dados da task
+            task_id = task_data.get("task_id")
+            status = task_data.get("status")
+            whatsapp = task_data.get("whatsapp")
+            
+            if not all([task_id, status, whatsapp]):
+                logger.error(f"Dados incompletos na task: {task_data}")
+                return False
                 
-                # Pequena pausa entre o envio de mensagens para evitar flood
-                if i < len(messages) - 1:
-                    await asyncio.sleep(1)
-            
-            logger.info(f"Todas as mensagens foram enviadas para {whatsapp_number}")
-            return True
-            
+            # Verificar se o número de WhatsApp está em um formato válido
+            if not whatsapp.isdigit():
+                logger.warning(f"Número de WhatsApp inválido: {whatsapp}. Tentando limpar...")
+                # Tentar limpar o número
+                whatsapp = re.sub(r'\D', '', whatsapp)
+                if not whatsapp.isdigit():
+                    logger.error(f"Número de WhatsApp ainda inválido após limpeza: {whatsapp}")
+                    return False
+                    
+            # Processar a task com base no status
+            if status == "completed":
+                # Enviar mensagem de sucesso
+                message = "Olá! Sua solicitação foi processada com sucesso."
+                await self.evo_api.send_text_message(whatsapp, message)
+                logger.info(f"Mensagem de sucesso enviada para {whatsapp}")
+                return True
+            elif status == "failed":
+                # Enviar mensagem de falha
+                message = "Desculpe, houve um problema ao processar sua solicitação."
+                await self.evo_api.send_text_message(whatsapp, message)
+                logger.info(f"Mensagem de falha enviada para {whatsapp}")
+                return True
+            else:
+                logger.warning(f"Status desconhecido: {status}")
+                return False
+                
         except Exception as e:
             logger.error(f"Erro ao processar resposta da task: {str(e)}")
             return False

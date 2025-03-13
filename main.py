@@ -53,10 +53,10 @@ class Settings(BaseSettings):
     API_KEY: str = Field(..., alias="API_KEY")
     SALES_BUILDER_API_URL: str = "https://sales-builder.ornexus.com/kickoff"
     SALES_BUILDER_API_KEY: str = "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX"
-    # Configurações da Evolution API
-    EVO_SUBDOMAIN: str = Field(..., alias="EVO_SUBDOMAIN")
-    EVO_TOKEN: str = Field(..., alias="EVO_TOKEN")
-    EVO_INSTANCE: str = Field(..., alias="EVO_INSTANCE")
+    # Configurações da Evolution API - agora opcionais
+    EVO_SUBDOMAIN: Optional[str] = Field(default=None, alias="EVO_SUBDOMAIN")
+    EVO_TOKEN: Optional[str] = Field(default=None, alias="EVO_TOKEN")
+    EVO_INSTANCE: Optional[str] = Field(default=None, alias="EVO_INSTANCE")
 
     model_config = ConfigDict(env_file=".env", extra='ignore')
 
@@ -436,19 +436,32 @@ async def submit_form(form_data: FormSubmission):
                     settings = Settings()
                     
                     # Verificar se as configurações da Evolution API estão presentes
-                    if not hasattr(settings, 'EVO_SUBDOMAIN') or not settings.EVO_SUBDOMAIN:
-                        logger.warning("Configuração EVO_SUBDOMAIN não encontrada")
-                    if not hasattr(settings, 'EVO_TOKEN') or not settings.EVO_TOKEN:
-                        logger.warning("Configuração EVO_TOKEN não encontrada")
-                    if not hasattr(settings, 'EVO_INSTANCE') or not settings.EVO_INSTANCE:
-                        logger.warning("Configuração EVO_INSTANCE não encontrada")
+                    evo_config_present = all([
+                        settings.EVO_SUBDOMAIN,
+                        settings.EVO_TOKEN,
+                        settings.EVO_INSTANCE
+                    ])
+                    
+                    if not evo_config_present:
+                        logger.warning(
+                            "Configurações da Evolution API incompletas. Pulando processamento da task.",
+                            subdomain=settings.EVO_SUBDOMAIN,
+                            instance=settings.EVO_INSTANCE,
+                            token_present=bool(settings.EVO_TOKEN)
+                        )
+                        return {
+                            "message": "Formulário recebido com sucesso",
+                            "document_id": str(result.inserted_id),
+                            "sales_builder_task_id": task_id,
+                            "warning": "Processamento da task pulado devido a configurações incompletas da Evolution API"
+                        }
                     
                     # Log para depuração
                     logger.info(
                         "Configurações da Evolution API",
-                        subdomain=getattr(settings, 'EVO_SUBDOMAIN', None),
-                        instance=getattr(settings, 'EVO_INSTANCE', None),
-                        token_present=bool(getattr(settings, 'EVO_TOKEN', None))
+                        subdomain=settings.EVO_SUBDOMAIN,
+                        instance=settings.EVO_INSTANCE,
+                        token_present=bool(settings.EVO_TOKEN)
                     )
                     
                     from sales_builder_status_checker import process_sales_builder_task
