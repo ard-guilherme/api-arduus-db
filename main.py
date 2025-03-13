@@ -146,7 +146,7 @@ app.add_middleware(
 # Configuração de logging
 def setup_logging():
     """
-    Configura o sistema de logging estruturado
+    Configura o sistema de logging
     
     Utiliza a biblioteca structlog para gerar logs em formato JSON,
     facilitando a integração com ferramentas de monitoramento.
@@ -156,6 +156,10 @@ def setup_logging():
             structlog.stdlib.filter_by_level,
             structlog.stdlib.add_logger_name,
             structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer()
         ],
@@ -302,7 +306,18 @@ async def call_sales_builder_api(lead_data: dict) -> dict:
         # Verificar se a chamada foi bem-sucedida
         response.raise_for_status()
         
-        return response.json()
+        # Converter a resposta para JSON
+        response_data = response.json()
+        
+        # Log detalhado da resposta
+        logger.info(
+            "Sales Builder API response details",
+            status_code=response.status_code,
+            response_data=response_data,
+            task_id=response_data.get("task_id")
+        )
+        
+        return response_data
 
 # Endpoint principal para submissão de formulário
 @app.post(
@@ -366,7 +381,11 @@ async def submit_form(form_data: FormSubmission):
         # Chamar a API Sales Builder
         try:
             sales_builder_response = await call_sales_builder_api(document)
-            logger.info("Sales Builder API called successfully", response=sales_builder_response)
+            logger.info(
+                "Sales Builder API called successfully", 
+                response=sales_builder_response,
+                task_id=sales_builder_response.get("task_id")
+            )
             
             return {
                 "message": "Formulário recebido com sucesso",
@@ -375,7 +394,12 @@ async def submit_form(form_data: FormSubmission):
             }
         except Exception as api_error:
             # Registrar o erro, mas não falhar a requisição
-            logger.error("Error calling Sales Builder API", error=str(api_error))
+            logger.error(
+                "Error calling Sales Builder API", 
+                error=str(api_error),
+                error_type=type(api_error).__name__,
+                error_details=repr(api_error)
+            )
             
             return {
                 "message": "Formulário recebido com sucesso, mas houve um erro ao iniciar o processo de interação",
