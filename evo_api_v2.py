@@ -8,17 +8,45 @@ from openai import OpenAI, OpenAIError
 from pydub import AudioSegment
 from datetime import datetime, timedelta
 
+# Carregar variáveis de ambiente
 load_dotenv()
 
 class EvolutionAPI:
-    def __init__(self):
-        self.evo_subdomain = os.getenv("EVO_SUBDOMAIN")
-        self.evo_instance = os.getenv("EVO_INSTANCE")
-        self.evo_token = os.getenv("EVO_TOKEN")
+    def __init__(self, settings=None):
+        """
+        Inicializa a API de Evolução com configurações.
+        
+        Args:
+            settings: Opcional. Instância de Settings da aplicação principal.
+                     Se não fornecido, carrega as configurações das variáveis de ambiente.
+        """
+        if settings:
+            # Usar configurações da aplicação principal
+            self.evo_subdomain = settings.EVO_SUBDOMAIN
+            self.evo_instance = settings.EVO_INSTANCE
+            self.evo_token = settings.EVO_TOKEN
+        else:
+            # Carregar das variáveis de ambiente
+            self.evo_subdomain = os.getenv("EVO_SUBDOMAIN")
+            self.evo_instance = os.getenv("EVO_INSTANCE")
+            self.evo_token = os.getenv("EVO_TOKEN")
+            
+            # Log para depuração
+            logging.info(f"Configurações da Evolution API: subdomain={self.evo_subdomain}, instance={self.evo_instance}")
+            
+            # Verificar se as configurações estão presentes
+            if not all([self.evo_subdomain, self.evo_instance, self.evo_token]):
+                missing = []
+                if not self.evo_subdomain: missing.append("EVO_SUBDOMAIN")
+                if not self.evo_instance: missing.append("EVO_INSTANCE")
+                if not self.evo_token: missing.append("EVO_TOKEN")
+                logging.error(f"Variáveis de ambiente da Evolution API ausentes: {', '.join(missing)}")
+        
         try:
             self.client = OpenAI()
         except Exception as e:
             logging.error(f"Erro ao inicializar o cliente OpenAI: {e}")
+            
         self.headers = {
             "apikey": self.evo_token,
             "Content-Type": "application/json"

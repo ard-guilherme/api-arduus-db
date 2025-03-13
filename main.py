@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import re
 import httpx
 import asyncio
+from functools import partial
 
 """
 API Arduus DB - Interface para o banco de dados MongoDB da Arduus
@@ -34,6 +35,9 @@ class Settings(BaseSettings):
         API_KEY: Chave de API para autenticação
         SALES_BUILDER_API_URL: URL da API Sales Builder
         SALES_BUILDER_API_KEY: Chave de API para autenticação na API Sales Builder
+        EVO_SUBDOMAIN: Subdomínio da Evolution API
+        EVO_TOKEN: Token de autenticação da Evolution API
+        EVO_INSTANCE: Nome da instância da Evolution API
     """
     MONGO_URI: str = Field(..., alias="MONGO_URI")
     DB_NAME: str = "arduus_db"
@@ -49,6 +53,10 @@ class Settings(BaseSettings):
     API_KEY: str = Field(..., alias="API_KEY")
     SALES_BUILDER_API_URL: str = "https://sales-builder.ornexus.com/kickoff"
     SALES_BUILDER_API_KEY: str = "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX"
+    # Configurações da Evolution API
+    EVO_SUBDOMAIN: str = Field(..., alias="EVO_SUBDOMAIN")
+    EVO_TOKEN: str = Field(..., alias="EVO_TOKEN")
+    EVO_INSTANCE: str = Field(..., alias="EVO_INSTANCE")
 
     model_config = ConfigDict(env_file=".env", extra='ignore')
 
@@ -424,9 +432,31 @@ async def submit_form(form_data: FormSubmission):
                     if current_dir not in sys.path:
                         sys.path.append(current_dir)
                     
+                    # Obter as configurações atuais
+                    settings = Settings()
+                    
+                    # Verificar se as configurações da Evolution API estão presentes
+                    if not hasattr(settings, 'EVO_SUBDOMAIN') or not settings.EVO_SUBDOMAIN:
+                        logger.warning("Configuração EVO_SUBDOMAIN não encontrada")
+                    if not hasattr(settings, 'EVO_TOKEN') or not settings.EVO_TOKEN:
+                        logger.warning("Configuração EVO_TOKEN não encontrada")
+                    if not hasattr(settings, 'EVO_INSTANCE') or not settings.EVO_INSTANCE:
+                        logger.warning("Configuração EVO_INSTANCE não encontrada")
+                    
+                    # Log para depuração
+                    logger.info(
+                        "Configurações da Evolution API",
+                        subdomain=getattr(settings, 'EVO_SUBDOMAIN', None),
+                        instance=getattr(settings, 'EVO_INSTANCE', None),
+                        token_present=bool(getattr(settings, 'EVO_TOKEN', None))
+                    )
+                    
                     from sales_builder_status_checker import process_sales_builder_task
-                    # Criar uma task em segundo plano para processar a resposta
-                    asyncio.create_task(process_sales_builder_task(task_id))
+                    # Criar uma task em segundo plano para processar a resposta, passando as configurações
+                    process_task_with_settings = partial(process_sales_builder_task, settings=settings)
+                    
+                    # Criar a task em segundo plano
+                    asyncio.create_task(process_task_with_settings(task_id))
                 except ImportError as e:
                     logger.error(f"Erro ao importar módulo sales_builder_status_checker: {str(e)}")
                     logger.info(f"PYTHONPATH atual: {sys.path}")

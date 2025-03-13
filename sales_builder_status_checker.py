@@ -5,6 +5,10 @@ import time
 import sys
 import os
 from typing import Dict, List, Optional, Any
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente
+load_dotenv()
 
 # Garantir que o diretório atual esteja no PYTHONPATH
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +31,7 @@ except ImportError:
         logging.error(f"Falha ao importar EvolutionAPI mesmo após ajustar PYTHONPATH: {str(e)}")
         # Fornecer uma classe stub para não quebrar a execução
         class EvolutionAPI:
-            def __init__(self):
+            def __init__(self, settings=None):
                 logging.warning("Usando versão stub da EvolutionAPI porque o módulo não pôde ser importado")
             
             def send_text_message(self, number, text, **kwargs):
@@ -48,7 +52,7 @@ class SalesBuilderStatusChecker:
     """
     
     def __init__(self, api_url: str = "https://sales-builder.ornexus.com", api_key: str = None, 
-                 max_retries: int = 5, retry_delay: int = 10, timeout: int = 60):
+                 max_retries: int = 5, retry_delay: int = 10, timeout: int = 60, settings=None):
         """
         Inicializa o verificador de status do Sales Builder.
         
@@ -58,13 +62,24 @@ class SalesBuilderStatusChecker:
             max_retries: Número máximo de tentativas em caso de erro
             retry_delay: Tempo de espera entre tentativas (em segundos)
             timeout: Timeout da requisição HTTP (em segundos)
+            settings: Configurações da aplicação principal (opcional)
         """
         self.api_url = api_url
         self.api_key = api_key
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.timeout = timeout
-        self.evo_api = EvolutionAPI()
+        self.settings = settings
+        
+        # Inicializar a Evolution API com as configurações fornecidas
+        self.evo_api = EvolutionAPI(settings=settings)
+        
+        # Log para garantir que as configurações da Evolution API estão corretas
+        logger.info(
+            "Evolution API inicializada",
+            subdomain=self.evo_api.evo_subdomain,
+            instance=self.evo_api.evo_instance
+        )
         
         # Configurar headers para as requisições
         self.headers = {}
@@ -203,19 +218,21 @@ class SalesBuilderStatusChecker:
             return False
 
 
-async def process_sales_builder_task(task_id: str) -> bool:
+async def process_sales_builder_task(task_id: str, settings=None) -> bool:
     """
     Função principal para processar uma task do Sales Builder.
     
     Args:
         task_id: ID da task a ser processada
+        settings: Configurações da aplicação principal (opcional)
         
     Returns:
         bool: True se o processamento foi bem-sucedido, False caso contrário
     """
     logger.info(f"Processando task {task_id} do Sales Builder")
     
-    checker = SalesBuilderStatusChecker()
+    # Criar o verificador com as configurações fornecidas
+    checker = SalesBuilderStatusChecker(settings=settings)
     try:
         result = await checker.check_and_process_task(task_id)
         return result
