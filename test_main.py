@@ -74,6 +74,9 @@ def mock_mongodb():
         mock_collection = AsyncMock()
         mock_collection.insert_one.return_value = MagicMock(inserted_id="mock_id")
         
+        # Por padrão, find_one retorna None (nenhum lead existente)
+        mock_collection.find_one.return_value = None
+        
         # Configurar o app para usar o mock
         app.mongodb_client = mock_client
         app.db = MagicMock()
@@ -366,3 +369,59 @@ def test_submit_form_sales_builder_api_failure(client, mock_mongodb, mock_settin
     
     # Verificar se a API Sales Builder foi chamada
     mock_sales_builder_api.assert_called_once() 
+
+# Teste para verificar detecção de leads duplicados
+def test_submit_form_duplicate_whatsapp(client, mock_mongodb, mock_settings, mock_sales_builder_api):
+    """
+    Testa a submissão de formulário com número de WhatsApp duplicado
+    
+    Verifica se o endpoint /submit-form/ detecta corretamente quando um número
+    de WhatsApp já existe na coleção e retorna uma resposta apropriada sem
+    inserir um novo documento ou chamar a API Sales Builder.
+    """
+    # Configurar o mock para simular um lead existente
+    existing_lead = {
+        "_id": "existing_id",
+        "nome_prospect": "Lead Existente",
+        "email_prospect": "existente@example.com",
+        "whatsapp_prospect": "5511987654321",
+        "empresa_prospect": "Empresa Existente",
+        "faturamento_empresa": "1-5 milhões",
+        "cargo_prospect": "CEO",
+        "pipe_stage": "fit_to_rapport",
+        "spiced_stage": "P1"
+    }
+    
+    # Configurar o mock para retornar o lead existente quando find_one for chamado
+    mock_mongodb.find_one.return_value = existing_lead
+    
+    # Dados de teste com o mesmo número de WhatsApp
+    test_data = {
+        "full_name": "Novo Lead",
+        "corporate_email": "novo@example.com",
+        "whatsapp": "+5511987654321",  # Mesmo número do lead existente
+        "company": "Nova Empresa",
+        "revenue": "5-10 milhões",
+        "job_title": "CTO",
+        "api_key": "test_api_key"
+    }
+    
+    # Enviar requisição
+    response = client.post("/submit-form/", json=test_data)
+    
+    # Verificar resposta
+    assert response.status_code == 201  # Created
+    assert "document_id" in response.json()
+    assert response.json()["document_id"] == "existing_id"
+    assert "is_duplicate" in response.json()
+    assert response.json()["is_duplicate"] == True
+    assert "Lead já existe" in response.json()["message"]
+    
+    # Verificar que o MongoDB.find_one foi chamado com o número de WhatsApp correto
+    mock_mongodb.find_one.assert_called_once_with({"whatsapp_prospect": "5511987654321"})
+    
+    # Verificar que o MongoDB.insert_one não foi chamado
+    mock_mongodb.insert_one.assert_not_called()
+    
+    # Verificar que a API Sales Builder não foi chamada
+    mock_sales_builder_api.assert_not_called() 

@@ -333,16 +333,20 @@ async def submit_form(form_data: FormSubmission):
     Recebe dados de um formulário e armazena no MongoDB
     
     Este endpoint valida os dados recebidos, verifica a API key
-    e armazena os dados no MongoDB.
+    e armazena os dados no MongoDB. Se o número de WhatsApp já existir
+    na coleção, retorna uma mensagem informando que o lead já existe
+    e não insere um novo documento nem chama a API Sales Builder.
     
     Args:
         form_data: Dados do formulário validados pelo modelo FormSubmission
         
     Returns:
-        dict: Mensagem de sucesso e ID do documento criado
+        dict: Mensagem de sucesso e ID do documento criado, ou mensagem
+              informando que o lead já existe e seu ID
         
     Raises:
         HTTPException 401: Se a API key for inválida
+        HTTPException 422: Se o número de WhatsApp for inválido
         HTTPException 500: Se ocorrer um erro ao processar o formulário
     """
     if form_data.api_key != Settings().API_KEY:
@@ -361,6 +365,22 @@ async def submit_form(form_data: FormSubmission):
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Número de WhatsApp inválido mesmo após limpeza. Deve conter apenas dígitos."
             )
+        
+        # Verificar se o número de WhatsApp já existe na coleção
+        existing_lead = await app.collection.find_one({"whatsapp_prospect": clean_number})
+        
+        if existing_lead:
+            logger.info(
+                "Lead already exists, skipping insertion", 
+                whatsapp=clean_number,
+                existing_id=str(existing_lead["_id"])
+            )
+            
+            return {
+                "message": "Lead já existe no banco de dados",
+                "document_id": str(existing_lead["_id"]),
+                "is_duplicate": True
+            }
         
         document = {
             "whatsapp_prospect": clean_number,
