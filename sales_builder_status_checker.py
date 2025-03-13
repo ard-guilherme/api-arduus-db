@@ -2,8 +2,37 @@ import httpx
 import asyncio
 import logging
 import time
+import sys
+import os
 from typing import Dict, List, Optional, Any
-from evo_api_v2 import EvolutionAPI
+
+# Garantir que o diretório atual esteja no PYTHONPATH
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
+try:
+    from evo_api_v2 import EvolutionAPI
+except ImportError:
+    # Log detalhado em caso de erro de importação
+    logging.error(f"Erro ao importar EvolutionAPI. PYTHONPATH atual: {sys.path}")
+    # Caminho alternativo para importação, tentando encontrar o módulo em locais diferentes
+    try:
+        # Tenta importar de forma relativa ao diretório do script
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        sys.path.insert(0, module_dir)
+        from evo_api_v2 import EvolutionAPI
+        logging.info(f"EvolutionAPI importado com sucesso do diretório {module_dir}")
+    except ImportError as e:
+        logging.error(f"Falha ao importar EvolutionAPI mesmo após ajustar PYTHONPATH: {str(e)}")
+        # Fornecer uma classe stub para não quebrar a execução
+        class EvolutionAPI:
+            def __init__(self):
+                logging.warning("Usando versão stub da EvolutionAPI porque o módulo não pôde ser importado")
+            
+            def send_text_message(self, number, text, **kwargs):
+                logging.warning(f"Stub: Enviando mensagem para {number}: {text[:50]}...")
+                return {"status": "error", "message": "EvolutionAPI não está disponível"}
 
 # Configuração de logging
 logging.basicConfig(
@@ -196,8 +225,6 @@ async def process_sales_builder_task(task_id: str) -> bool:
 
 # Exemplo de uso
 if __name__ == "__main__":
-    import sys
-    
     if len(sys.argv) != 2:
         print("Uso: python sales_builder_status_checker.py <task_id>")
         sys.exit(1)

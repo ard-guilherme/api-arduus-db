@@ -320,9 +320,6 @@ async def call_sales_builder_api(lead_data: dict) -> dict:
         
         return response_data
 
-# Importar o módulo de verificação de status do Sales Builder
-from sales_builder_status_checker import process_sales_builder_task
-
 # Endpoint principal para submissão de formulário
 @app.post(
     "/submit-form/",
@@ -418,8 +415,23 @@ async def submit_form(form_data: FormSubmission):
             task_id = sales_builder_response.get("task_id")
             if task_id:
                 logger.info(f"Iniciando processamento da task {task_id} em segundo plano")
-                # Criar uma task em segundo plano para processar a resposta
-                asyncio.create_task(process_sales_builder_task(task_id))
+                # Importar o módulo apenas quando necessário
+                try:
+                    import sys
+                    import os
+                    # Garantir que o diretório atual esteja no PYTHONPATH
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    if current_dir not in sys.path:
+                        sys.path.append(current_dir)
+                    
+                    from sales_builder_status_checker import process_sales_builder_task
+                    # Criar uma task em segundo plano para processar a resposta
+                    asyncio.create_task(process_sales_builder_task(task_id))
+                except ImportError as e:
+                    logger.error(f"Erro ao importar módulo sales_builder_status_checker: {str(e)}")
+                    logger.info(f"PYTHONPATH atual: {sys.path}")
+                except Exception as e:
+                    logger.error(f"Erro ao iniciar processamento da task: {str(e)}")
             
             return {
                 "message": "Formulário recebido com sucesso",
