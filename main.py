@@ -237,20 +237,17 @@ def clean_whatsapp_number(number: str) -> str:
     """
     Remove caracteres não numéricos do número de WhatsApp
     
-    Esta função remove espaços, hífens e outros caracteres não numéricos
-    do número de WhatsApp, mantendo apenas o sinal de + no início, se existir.
+    Esta função remove espaços, hífens, o sinal de + e outros caracteres não numéricos
+    do número de WhatsApp, mantendo apenas os dígitos.
     
     Args:
         number: Número de WhatsApp com possível formatação
         
     Returns:
-        str: Número de WhatsApp limpo, contendo apenas dígitos e possivelmente um + no início
+        str: Número de WhatsApp limpo, contendo apenas dígitos
     """
-    # Preserva o sinal de + no início, se existir
-    if number.startswith('+'):
-        return '+' + re.sub(r'\D', '', number[1:])
-    else:
-        return re.sub(r'\D', '', number)
+    # Remove todos os caracteres não numéricos, incluindo o sinal de +
+    return re.sub(r'\D', '', number)
 
 # Endpoint principal para submissão de formulário
 @app.post(
@@ -289,10 +286,10 @@ async def submit_form(form_data: FormSubmission):
         clean_number = clean_whatsapp_number(form_data.whatsapp_prospect)
         
         # Verifica se o número limpo está em um formato válido
-        if not re.match(r'^\+?[1-9]\d{1,14}$', clean_number):
+        if not re.match(r'^[1-9]\d{1,14}$', clean_number):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Número de WhatsApp inválido mesmo após limpeza. Deve conter apenas dígitos e possivelmente um + no início."
+                detail="Número de WhatsApp inválido mesmo após limpeza. Deve conter apenas dígitos."
             )
         
         document = {

@@ -143,7 +143,7 @@ def test_submit_form_valid(client, mock_mongodb, mock_settings):
     called_args = mock_mongodb.insert_one.call_args[0][0]
     assert called_args["nome_prospect"] == "Teste da Silva"
     assert called_args["email_prospect"] == "teste@example.com"
-    assert called_args["whatsapp_prospect"] == "+5511987654321"
+    assert called_args["whatsapp_prospect"] == "5511987654321"
     assert called_args["empresa_prospect"] == "Empresa Teste"
     assert called_args["faturamento_empresa"] == "1-5 milhões"
     assert called_args["cargo_prospect"] == "Diretor"
@@ -274,7 +274,7 @@ def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings):
     called_args = mock_mongodb.insert_one.call_args[0][0]
     assert called_args["nome_prospect"] == "Teste da Silva"
     assert called_args["email_prospect"] == "teste@example.com"
-    assert called_args["whatsapp_prospect"] == "+5511987654321"  # Número limpo
+    assert called_args["whatsapp_prospect"] == "5511987654321"  # Número limpo sem o +
     assert called_args["empresa_prospect"] == "Empresa Teste"
     assert called_args["faturamento_empresa"] == "1-5 milhões"
     assert called_args["cargo_prospect"] == "Diretor" 
