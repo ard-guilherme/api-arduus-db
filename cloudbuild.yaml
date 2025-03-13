@@ -21,9 +21,12 @@ steps:
     - '--memory'
     - '512Mi'
     - '--set-env-vars'
-    - 'MONGO_URI=${_MONGO_URI},CORS_ORIGINS=${_CORS_ORIGINS},API_KEY=${_API_KEY}'
+    - 'MONGO_URI=${_MONGO_URI},CORS_ORIGINS=${_CORS_ORIGINS},API_KEY=${_API_KEY},EVO_SUBDOMAIN=${_EVO_SUBDOMAIN},EVO_TOKEN=${_EVO_TOKEN},EVO_INSTANCE=${_EVO_INSTANCE}'
 
 substitutions:
   _MONGO_URI: "sua-uri-mongodb"
   _CORS_ORIGINS: "https://seu-frontend.com"
-  _API_KEY: "sua-chave-api" 
+  _API_KEY: "sua-chave-api"
+  _EVO_SUBDOMAIN: "wpp.ornexus.com"
+  _EVO_TOKEN: "5A8C8A24F79B-4FF9-8EC3-8A070EA0D318"
+  _EVO_INSTANCE: "Luan Detoni" 

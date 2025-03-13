@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar apenas os arquivos necessários, excluindo arquivos de teste
 COPY main.py .
+COPY sales_builder_status_checker.py .
+COPY evo_api_v2.py .
 COPY README.md .
 COPY CONTRIBUTING.md .
 COPY cloudbuild.yaml .
