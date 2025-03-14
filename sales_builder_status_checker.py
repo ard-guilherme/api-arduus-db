@@ -198,15 +198,49 @@ class SalesBuilderStatusChecker:
                 
                 if response.status_code == 200:
                     response_data = response.json()
-                    logger.info(
-                        "Task completada com sucesso",
-                        task_id=task_id,
-                        status_code=response.status_code,
-                        response_data=response_data,
-                        elapsed_total_seconds=elapsed_total
-                    )
-                    print(f"[{datetime.now().isoformat()}] STATUS OBTIDO: Task {task_id} completada com sucesso após {elapsed_total:.2f}s")
-                    return response_data
+                    
+                    # Verificar se o campo msg_resposta existe e não está vazio
+                    has_messages = False
+                    if "result" in response_data and response_data["result"]:
+                        if "msg_resposta" in response_data["result"] and response_data["result"]["msg_resposta"]:
+                            has_messages = True
+                    
+                    if has_messages:
+                        logger.info(
+                            "Task completada com sucesso e contém mensagens",
+                            task_id=task_id,
+                            status_code=response.status_code,
+                            response_data=response_data,
+                            elapsed_total_seconds=elapsed_total
+                        )
+                        print(f"[{datetime.now().isoformat()}] STATUS OBTIDO: Task {task_id} completada com sucesso após {elapsed_total:.2f}s")
+                        return response_data
+                    else:
+                        logger.warning(
+                            "Task retornou status 200 mas não contém mensagens. Aguardando...",
+                            task_id=task_id,
+                            status_code=response.status_code,
+                            elapsed_total_seconds=elapsed_total
+                        )
+                        print(f"[{datetime.now().isoformat()}] AGUARDANDO MENSAGENS: Task {task_id} retornou status 200 mas não contém mensagens. Aguardando 30s para nova tentativa.")
+                        
+                        # Incrementar contador de tentativas
+                        retries += 1
+                        
+                        # Verificar se atingimos o limite de tentativas
+                        if retries >= self.max_retries:
+                            logger.error(
+                                "Número máximo de tentativas excedido aguardando mensagens",
+                                task_id=task_id,
+                                max_attempts=self.max_retries,
+                                elapsed_total_seconds=elapsed_total
+                            )
+                            print(f"[{datetime.now().isoformat()}] MÁXIMO DE TENTATIVAS: {self.max_retries} tentativas de verificação da task {task_id} falharam após {elapsed_total:.2f}s")
+                            return {"error": "Timeout aguardando mensagens da task", "task_id": task_id}
+                        
+                        # Aguardar 30 segundos antes da próxima tentativa
+                        await asyncio.sleep(30)
+                        continue
                 elif response.status_code == 403:
                     try:
                         error_data = response.json()

@@ -46,7 +46,73 @@ async def test_check_task_status():
         mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
         
-        # Configurar o mock da resposta
+        # Configurar o mock da resposta com mensagens
+        mock_response_with_messages = MagicMock()
+        mock_response_with_messages.status_code = 200
+        mock_response_with_messages.json.return_value = SAMPLE_RESPONSE
+        
+        # Configurar o mock da resposta sem mensagens
+        response_without_messages = {
+            "task_id": "1741882913572_8470f029",
+            "queue": "sales-builder",
+            "state": "COMPLETED",
+            "result": {
+                "analise_icp": None,
+                "atendimento": {
+                    "interacao": "Iniciar a conversa com lead à partir do P1",
+                    "status": "primeiro_contato",
+                    "p_atual": "P1",
+                    "tipo_interacao": "positivo",
+                    "p_proxima": "P2",
+                    "msg_resposta": [],  # Lista vazia
+                    "periodo_agendamento": "NULL",
+                    "horario_agendamento": "NULL",
+                    "dia_agendamento": "NULL",
+                    "link_agendamento_google_calendar": "NULL",
+                    "link_meet_google": "NULL"
+                },
+                "msg_resposta": [],  # Lista vazia
+                "nome_prospect": "Guilherme Moura",
+                "whatsapp_prospect": "5524999887888"
+            },
+            "timestamp": "2025-03-13T16:30:17.336866+00:00"
+        }
+        mock_response_without_messages = MagicMock()
+        mock_response_without_messages.status_code = 200
+        mock_response_without_messages.json.return_value = response_without_messages
+        
+        # Configurar o mock para retornar primeiro a resposta sem mensagens e depois com mensagens
+        mock_client.get.side_effect = [mock_response_without_messages, mock_response_with_messages]
+        
+        # Mock para asyncio.sleep para não esperar realmente
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            # Inicializar o checker com retry_delay reduzido para o teste
+            checker = SalesBuilderStatusChecker(api_url="https://test-api.com", retry_delay=1)
+            
+            # Testar a verificação de status
+            result = await checker.check_task_status("test_task_id")
+            
+            # Verificar se o método get foi chamado duas vezes
+            assert mock_client.get.call_count == 2
+            
+            # Verificar se sleep foi chamado com 30 segundos
+            mock_sleep.assert_called_once_with(30)
+            
+            # Verificar se o resultado é o esperado (a resposta com mensagens)
+            assert result == SAMPLE_RESPONSE
+            
+            # Fechar o cliente
+            await checker.close()
+
+@pytest.mark.asyncio
+async def test_check_task_status_with_messages_immediately():
+    # Mock para o cliente httpx
+    with patch("sales_builder_status_checker.httpx.AsyncClient") as mock_client_class:
+        # Configurar o mock do cliente
+        mock_client = AsyncMock()
+        mock_client_class.return_value = mock_client
+        
+        # Configurar o mock da resposta com mensagens imediatamente
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = SAMPLE_RESPONSE
