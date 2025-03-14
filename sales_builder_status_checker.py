@@ -66,11 +66,16 @@ class SalesBuilderStatusChecker:
             settings: Configurações da aplicação principal (opcional)
         """
         self.api_url = api_url
-        self.api_key = api_key
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.timeout = timeout
         self.settings = settings
+        
+        # Obter a chave de API do Sales Builder
+        if settings and hasattr(settings, 'SALES_BUILDER_API_KEY'):
+            self.api_key = settings.SALES_BUILDER_API_KEY
+        else:
+            self.api_key = api_key or os.getenv("SALES_BUILDER_API_KEY", "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX")
         
         # Inicializar a Evolution API com as configurações fornecidas
         self.evo_api = EvolutionAPI(settings=settings)
@@ -81,9 +86,10 @@ class SalesBuilderStatusChecker:
         )
         
         # Configurar headers para as requisições
-        self.headers = {}
-        if api_key:
-            self.headers["Authorization"] = f"Bearer {api_key}"
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
         
         # Cliente HTTP
         self.client = httpx.AsyncClient(
@@ -106,7 +112,8 @@ class SalesBuilderStatusChecker:
             Dict contendo os dados da resposta ou None em caso de erro
         """
         url = f"{self.api_url}/status/{task_id}"
-        logger.info(f"Verificando status da task {task_id}")
+        logger.info(f"Verificando status da task {task_id} na URL: {url}")
+        logger.info(f"Headers de autorização: {self.headers.get('Authorization', 'Não definido').replace(self.api_key, '***')}")
         
         retries = 0
         while retries < self.max_retries:
@@ -114,11 +121,29 @@ class SalesBuilderStatusChecker:
                 logger.info(f"Tentativa {retries+1} de {self.max_retries} para verificar task {task_id}")
                 response = await self.client.get(url, timeout=self.timeout)
                 
+                # Log da resposta para depuração
+                logger.info(f"Resposta da API: Status {response.status_code}")
+                
                 if response.status_code == 200:
                     logger.info(f"Task {task_id} completada com sucesso")
-                    return response.json()
-                
-                logger.warning(f"Resposta inesperada: Status {response.status_code}")
+                    response_data = response.json()
+                    logger.info(f"Dados da resposta: {response_data}")
+                    return response_data
+                elif response.status_code == 403:
+                    logger.error(f"Erro de autorização (403): Verifique a chave de API do Sales Builder")
+                    try:
+                        error_data = response.json()
+                        logger.error(f"Detalhes do erro: {error_data}")
+                    except:
+                        logger.error(f"Corpo da resposta: {response.text}")
+                    return {"error": f"{response.status_code}: Erro de autorização", "task_id": task_id}
+                else:
+                    logger.warning(f"Resposta inesperada: Status {response.status_code}")
+                    try:
+                        error_data = response.json()
+                        logger.warning(f"Detalhes da resposta: {error_data}")
+                    except:
+                        logger.warning(f"Corpo da resposta: {response.text}")
                 
             except httpx.TimeoutException:
                 logger.warning(f"Timeout ao verificar status da task {task_id}. Tentando novamente...")
@@ -133,7 +158,7 @@ class SalesBuilderStatusChecker:
                 await asyncio.sleep(self.retry_delay)
         
         logger.error(f"Número máximo de tentativas excedido para a task {task_id}")
-        return None
+        return {"error": "Número máximo de tentativas excedido", "task_id": task_id}
     
     async def process_task_response(self, task_data: Dict[str, Any]) -> bool:
         """
@@ -146,6 +171,11 @@ class SalesBuilderStatusChecker:
             bool: True se o processamento foi bem-sucedido, False caso contrário
         """
         try:
+            # Verificar se há erro na resposta
+            if "error" in task_data:
+                logger.error(f"Erro na resposta da API: {task_data.get('error')}")
+                return False
+                
             # Verificar se a Evolution API está configurada
             if not hasattr(self.evo_api, 'is_configured') or not self.evo_api.is_configured:
                 logger.warning("Evolution API não está configurada corretamente. Não é possível enviar mensagens.")
@@ -209,6 +239,28 @@ class SalesBuilderStatusChecker:
             if not task_data:
                 logger.error(f"Não foi possível obter dados da task {task_id}")
                 return False
+            
+            # Verificar se há erro na resposta
+            if "error" in task_data:
+                logger.error(f"Erro ao verificar status da task {task_id}: {task_data.get('error')}")
+                # Se for erro de autorização, tentar novamente com uma nova chave
+                if "autorização" in task_data.get('error', '').lower() or "403" in task_data.get('error', ''):
+                    logger.info("Tentando atualizar a chave de API e tentar novamente...")
+                    # Usar a chave padrão do código
+                    self.api_key = "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX"
+                    self.headers["Authorization"] = f"Bearer {self.api_key}"
+                    self.client = httpx.AsyncClient(
+                        timeout=self.timeout,
+                        headers=self.headers
+                    )
+                    # Tentar novamente
+                    logger.info("Tentando verificar o status novamente com a nova chave...")
+                    task_data = await self.check_task_status(task_id)
+                    if "error" in task_data:
+                        logger.error("Falha mesmo após atualizar a chave de API")
+                        return False
+                else:
+                    return False
             
             # Processar resposta da task
             success = await self.process_task_response(task_data)
