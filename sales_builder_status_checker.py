@@ -72,10 +72,18 @@ class SalesBuilderStatusChecker:
         self.settings = settings
         
         # Obter a chave de API do Sales Builder
-        if settings and hasattr(settings, 'SALES_BUILDER_API_KEY'):
+        # Prioridade: 1. Parâmetro api_key, 2. Settings, 3. Variável de ambiente
+        if api_key:
+            self.api_key = api_key
+        elif settings and hasattr(settings, 'SALES_BUILDER_API_KEY'):
             self.api_key = settings.SALES_BUILDER_API_KEY
         else:
-            self.api_key = api_key or os.getenv("SALES_BUILDER_API_KEY", "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX")
+            # Carregar do .env via python-dotenv
+            self.api_key = os.getenv("SALES_BUILDER_API_KEY")
+            if not self.api_key:
+                logger.warning("Chave de API do Sales Builder não encontrada. Algumas funcionalidades podem não estar disponíveis.")
+        
+        logger.info(f"Usando chave de API do Sales Builder: {self.api_key[:5]}...{self.api_key[-5:] if self.api_key else 'None'}")
         
         # Inicializar a Evolution API com as configurações fornecidas
         self.evo_api = EvolutionAPI(settings=settings)
@@ -183,10 +191,18 @@ class SalesBuilderStatusChecker:
                 
             # Extrair dados da task
             task_id = task_data.get("task_id")
-            status = task_data.get("status")
-            whatsapp = task_data.get("whatsapp")
+            result = task_data.get("result", {})
             
-            if not all([task_id, status, whatsapp]):
+            # Verificar se temos os dados necessários
+            if not task_id or not result:
+                logger.error(f"Dados incompletos na task: {task_data}")
+                return False
+            
+            # Extrair o número de WhatsApp e as mensagens
+            whatsapp = result.get("whatsapp_prospect")
+            messages = result.get("msg_resposta", [])
+            
+            if not whatsapp or not messages:
                 logger.error(f"Dados incompletos na task: {task_data}")
                 return False
                 
@@ -198,24 +214,19 @@ class SalesBuilderStatusChecker:
                 if not whatsapp.isdigit():
                     logger.error(f"Número de WhatsApp ainda inválido após limpeza: {whatsapp}")
                     return False
-                    
-            # Processar a task com base no status
-            if status == "completed":
-                # Enviar mensagem de sucesso
-                message = "Olá! Sua solicitação foi processada com sucesso."
-                await self.evo_api.send_text_message(whatsapp, message)
-                logger.info(f"Mensagem de sucesso enviada para {whatsapp}")
-                return True
-            elif status == "failed":
-                # Enviar mensagem de falha
-                message = "Desculpe, houve um problema ao processar sua solicitação."
-                await self.evo_api.send_text_message(whatsapp, message)
-                logger.info(f"Mensagem de falha enviada para {whatsapp}")
-                return True
-            else:
-                logger.warning(f"Status desconhecido: {status}")
-                return False
-                
+            
+            # Enviar cada mensagem para o WhatsApp
+            for message in messages:
+                if message and isinstance(message, str):
+                    await self.evo_api.send_text_message(
+                        number=whatsapp,
+                        text=message
+                    )
+                    logger.info(f"Mensagem enviada para {whatsapp}: {message[:50]}...")
+            
+            logger.info(f"Processamento da task {task_id} concluído com sucesso")
+            return True
+            
         except Exception as e:
             logger.error(f"Erro ao processar resposta da task: {str(e)}")
             return False
@@ -243,21 +254,29 @@ class SalesBuilderStatusChecker:
             # Verificar se há erro na resposta
             if "error" in task_data:
                 logger.error(f"Erro ao verificar status da task {task_id}: {task_data.get('error')}")
-                # Se for erro de autorização, tentar novamente com uma nova chave
+                # Se for erro de autorização, tentar recarregar a chave do .env
                 if "autorização" in task_data.get('error', '').lower() or "403" in task_data.get('error', ''):
-                    logger.info("Tentando atualizar a chave de API e tentar novamente...")
-                    # Usar a chave padrão do código
-                    self.api_key = "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX"
-                    self.headers["Authorization"] = f"Bearer {self.api_key}"
-                    self.client = httpx.AsyncClient(
-                        timeout=self.timeout,
-                        headers=self.headers
-                    )
-                    # Tentar novamente
-                    logger.info("Tentando verificar o status novamente com a nova chave...")
-                    task_data = await self.check_task_status(task_id)
-                    if "error" in task_data:
-                        logger.error("Falha mesmo após atualizar a chave de API")
+                    logger.info("Tentando recarregar a chave de API do .env e tentar novamente...")
+                    # Recarregar o .env para garantir que temos a chave mais recente
+                    load_dotenv(override=True)
+                    env_api_key = os.getenv("SALES_BUILDER_API_KEY")
+                    
+                    if env_api_key and env_api_key != self.api_key:
+                        logger.info("Encontrada nova chave de API no .env. Tentando novamente...")
+                        self.api_key = env_api_key
+                        self.headers["Authorization"] = f"Bearer {self.api_key}"
+                        self.client = httpx.AsyncClient(
+                            timeout=self.timeout,
+                            headers=self.headers
+                        )
+                        # Tentar novamente
+                        logger.info("Tentando verificar o status novamente com a nova chave...")
+                        task_data = await self.check_task_status(task_id)
+                        if "error" in task_data:
+                            logger.error("Falha mesmo após atualizar a chave de API")
+                            return False
+                    else:
+                        logger.error("Não foi possível encontrar uma chave de API alternativa no .env")
                         return False
                 else:
                     return False

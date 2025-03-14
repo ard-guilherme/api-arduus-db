@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, status, Depends, Request
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from pydantic_settings import BaseSettings
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Dict, Any, List
 import os
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +12,7 @@ import re
 import httpx
 import asyncio
 from functools import partial
+from dotenv import load_dotenv
 
 """
 API Arduus DB - Interface para o banco de dados MongoDB da Arduus
@@ -24,41 +25,31 @@ validação rigorosa, autenticação via chave API, rate limiting e logs estrutu
 # 1. Configurações e modelos primeiro
 class Settings(BaseSettings):
     """
-    Configurações da aplicação carregadas de variáveis de ambiente ou arquivo .env
-    
-    Attributes:
-        MONGO_URI: URI de conexão com o MongoDB
-        DB_NAME: Nome do banco de dados
-        COLLECTION_NAME: Nome da coleção principal
-        CORS_ORIGINS: Origens permitidas para CORS (separadas por vírgula)
-        GCP_PROJECT: ID do projeto GCP (auto detectado no Cloud Run)
-        API_KEY: Chave de API para autenticação
-        SALES_BUILDER_API_URL: URL da API Sales Builder
-        SALES_BUILDER_API_KEY: Chave de API para autenticação na API Sales Builder
-        EVO_SUBDOMAIN: Subdomínio da Evolution API
-        EVO_TOKEN: Token de autenticação da Evolution API
-        EVO_INSTANCE: Nome da instância da Evolution API
+    Configurações da aplicação.
     """
-    MONGO_URI: str = Field(..., alias="MONGO_URI")
+    MONGO_URI: str = Field(..., env="MONGO_URI")
+    CORS_ORIGINS: str = Field(..., env="CORS_ORIGINS")
+    API_KEY: str = Field(..., env="API_KEY")
+    
+    # Configurações do banco de dados
     DB_NAME: str = "arduus_db"
     COLLECTION_NAME: str = "crm_db"
-    CORS_ORIGINS: str = Field(
-        default="*",
-        description="Origins permitidos separados por vírgula"
-    )
-    GCP_PROJECT: Optional[str] = Field(
-        default=None,
-        description="ID do projeto GCP (auto detectado no Cloud Run)"
-    )
-    API_KEY: str = Field(..., alias="API_KEY")
+    
+    # Configurações da Evolution API
+    EVO_SUBDOMAIN: str = Field(..., env="EVO_SUBDOMAIN")
+    EVO_TOKEN: str = Field(..., env="EVO_TOKEN")
+    EVO_INSTANCE: str = Field(..., env="EVO_INSTANCE")
+    
+    # Configurações do OpenAI
+    OPENAI_API_KEY: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
+    
+    # Configurações do Sales Builder
+    SALES_BUILDER_API_KEY: Optional[str] = Field(default=None, env="SALES_BUILDER_API_KEY")
     SALES_BUILDER_API_URL: str = "https://sales-builder.ornexus.com/kickoff"
-    SALES_BUILDER_API_KEY: str = "7rQa9a0gGOz0jsG0EAlI3TxilYE2Y5pX"
-    # Configurações da Evolution API - agora opcionais
-    EVO_SUBDOMAIN: Optional[str] = Field(default=None, alias="EVO_SUBDOMAIN")
-    EVO_TOKEN: Optional[str] = Field(default=None, alias="EVO_TOKEN")
-    EVO_INSTANCE: Optional[str] = Field(default=None, alias="EVO_INSTANCE")
-
-    model_config = ConfigDict(env_file=".env", extra='ignore')
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
 class FormSubmission(BaseModel):
     """
@@ -268,65 +259,52 @@ def clean_whatsapp_number(number: str) -> str:
     return re.sub(r'\D', '', number)
 
 # Função para chamar a API Sales Builder
-async def call_sales_builder_api(lead_data: dict) -> dict:
+async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
     """
-    Chama a API Sales Builder para iniciar um processo após a inserção do lead no CRM
-    
-    Esta função envia os dados do lead para a API Sales Builder, que iniciará um processo
-    de interação com o lead.
+    Chama a API do Sales Builder para processar um lead.
     
     Args:
-        lead_data: Dados do lead inserido no MongoDB
+        lead_data: Dados do lead a serem enviados
+        settings: Configurações da aplicação
         
     Returns:
-        dict: Resposta da API Sales Builder
-        
-    Raises:
-        Exception: Se ocorrer um erro ao chamar a API
+        dict: Resposta da API
     """
-    settings = Settings()
+    api_url = settings.SALES_BUILDER_API_URL
+    api_key = settings.SALES_BUILDER_API_KEY
     
-    # Preparar os dados para a API Sales Builder
-    payload = {
-        "nome_prospect": lead_data["nome_prospect"],
-        "empresa_prospect": lead_data["empresa_prospect"],
-        "cargo_prospect": lead_data["cargo_prospect"],
-        "email_prospect": lead_data["email_prospect"],
-        "whatsapp_prospect": lead_data["whatsapp_prospect"],
-        "faturamento_prospect": lead_data["faturamento_empresa"],
-        "nome_vendedor": "Vagner Campos",
-        "interacao": "Iniciar a conversa com lead à partir do P1"
-    }
+    if not api_key:
+        logger.warning("Chave da API do Sales Builder não configurada. Pulando chamada à API.")
+        return {"error": "API key not configured"}
     
-    # Configurar os headers
+    # Máscara para log (mostra apenas os primeiros e últimos 5 caracteres)
+    masked_key = f"{api_key[:5]}...{api_key[-5:]}" if len(api_key) > 10 else "***"
+    logger.info(f"Chamando API Sales Builder: {api_url} com chave: {masked_key}")
+    
     headers = {
-        "Authorization": f"Bearer {settings.SALES_BUILDER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
     }
     
-    # Fazer a chamada à API
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            settings.SALES_BUILDER_API_URL,
-            json=payload,
-            headers=headers
-        )
-        
-        # Verificar se a chamada foi bem-sucedida
-        response.raise_for_status()
-        
-        # Converter a resposta para JSON
-        response_data = response.json()
-        
-        # Log detalhado da resposta
-        logger.info(
-            "Sales Builder API response details",
-            status_code=response.status_code,
-            response_data=response_data,
-            task_id=response_data.get("task_id")
-        )
-        
-        return response_data
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                api_url,
+                json=lead_data,
+                headers=headers,
+                timeout=30.0
+            )
+            
+        if response.status_code == 200:
+            logger.info("Chamada à API Sales Builder bem-sucedida")
+            return response.json()
+        else:
+            logger.error(f"Erro na chamada à API Sales Builder: {response.status_code} - {response.text}")
+            return {"error": f"API error: {response.status_code}", "details": response.text}
+            
+    except Exception as e:
+        logger.error(f"Exceção ao chamar API Sales Builder: {str(e)}")
+        return {"error": f"Exception: {str(e)}"}
 
 # Endpoint principal para submissão de formulário
 @app.post(
@@ -361,7 +339,9 @@ async def submit_form(form_data: FormSubmission):
         HTTPException 422: Se o número de WhatsApp for inválido
         HTTPException 500: Se ocorrer um erro ao processar o formulário
     """
-    if form_data.api_key != Settings().API_KEY:
+    settings = Settings()
+    
+    if form_data.api_key != settings.API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Chave API inválida"
@@ -412,7 +392,19 @@ async def submit_form(form_data: FormSubmission):
         
         # Chamar a API Sales Builder
         try:
-            sales_builder_response = await call_sales_builder_api(document)
+            # Preparar os dados para a API Sales Builder
+            sales_builder_payload = {
+                "nome_prospect": document["nome_prospect"],
+                "empresa_prospect": document["empresa_prospect"],
+                "cargo_prospect": document["cargo_prospect"],
+                "email_prospect": document["email_prospect"],
+                "whatsapp_prospect": document["whatsapp_prospect"],
+                "faturamento_empresa": document["faturamento_empresa"],
+                "nome_vendedor": "Vagner Campos",
+                "interacao": "Iniciar a conversa com lead à partir do P1"
+            }
+            
+            sales_builder_response = await call_sales_builder_api(sales_builder_payload, settings)
             logger.info(
                 "Sales Builder API called successfully", 
                 response=sales_builder_response,
@@ -431,9 +423,6 @@ async def submit_form(form_data: FormSubmission):
                     current_dir = os.path.dirname(os.path.abspath(__file__))
                     if current_dir not in sys.path:
                         sys.path.append(current_dir)
-                    
-                    # Obter as configurações atuais
-                    settings = Settings()
                     
                     # Verificar se as configurações da Evolution API estão presentes
                     evo_config_present = all([
@@ -483,19 +472,20 @@ async def submit_form(form_data: FormSubmission):
             }
         except Exception as api_error:
             # Registrar o erro, mas não falhar a requisição
+            error_message = str(api_error)
             logger.error(
                 "Error calling Sales Builder API", 
-                error=str(api_error),
+                error=error_message,
                 error_type=type(api_error).__name__,
                 error_details=repr(api_error)
             )
-            
+        
             return {
                 "message": "Formulário recebido com sucesso, mas houve um erro ao iniciar o processo de interação",
                 "document_id": str(result.inserted_id),
-                "sales_builder_error": str(api_error)
+                "sales_builder_error": error_message
             }
-    
+        
     except Exception as e:
         logger.error("Form submission error", error=str(e))
         raise HTTPException(

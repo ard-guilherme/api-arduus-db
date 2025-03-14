@@ -76,7 +76,8 @@ async def test_process_task_response():
     with patch("sales_builder_status_checker.EvolutionAPI") as mock_evo_api_class:
         # Configurar o mock da classe EvolutionAPI
         mock_evo_api = MagicMock()
-        mock_evo_api.send_text_message.return_value = {"status": "success"}
+        mock_evo_api.send_text_message = AsyncMock(return_value={"status": "success"})
+        mock_evo_api.is_configured = True
         mock_evo_api_class.return_value = mock_evo_api
         
         # Inicializar o checker
