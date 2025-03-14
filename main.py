@@ -279,7 +279,27 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
     
     # Máscara para log (mostra apenas os primeiros e últimos 5 caracteres)
     masked_key = f"{api_key[:5]}...{api_key[-5:]}" if len(api_key) > 10 else "***"
-    logger.info(f"Chamando API Sales Builder: {api_url} com chave: {masked_key}")
+    
+    # Criar uma cópia do payload para log com dados sensíveis mascarados
+    log_payload = lead_data.copy()
+    if "email_prospect" in log_payload:
+        email = log_payload["email_prospect"]
+        if "@" in email:
+            username, domain = email.split("@", 1)
+            if len(username) > 3:
+                log_payload["email_prospect"] = f"{username[:2]}***@{domain}"
+    
+    if "whatsapp_prospect" in log_payload:
+        whatsapp = log_payload["whatsapp_prospect"]
+        if len(whatsapp) > 6:
+            log_payload["whatsapp_prospect"] = f"{whatsapp[:4]}***{whatsapp[-2:]}"
+    
+    logger.info(
+        "Iniciando chamada à API Sales Builder",
+        url=api_url,
+        api_key_masked=masked_key,
+        payload=log_payload
+    )
     
     headers = {
         "Content-Type": "application/json",
@@ -287,6 +307,7 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
     }
     
     try:
+        start_time = datetime.utcnow()
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 api_url,
@@ -294,16 +315,51 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
                 headers=headers,
                 timeout=30.0
             )
+        
+        elapsed_time = (datetime.utcnow() - start_time).total_seconds()
             
         if response.status_code == 200:
-            logger.info("Chamada à API Sales Builder bem-sucedida")
-            return response.json()
+            response_data = response.json()
+            logger.info(
+                "Chamada à API Sales Builder bem-sucedida",
+                status_code=response.status_code,
+                elapsed_time_seconds=elapsed_time,
+                response_data=response_data
+            )
+            return response_data
         else:
-            logger.error(f"Erro na chamada à API Sales Builder: {response.status_code} - {response.text}")
+            logger.error(
+                "Erro na chamada à API Sales Builder",
+                status_code=response.status_code,
+                elapsed_time_seconds=elapsed_time,
+                response_text=response.text,
+                payload=log_payload
+            )
             return {"error": f"API error: {response.status_code}", "details": response.text}
             
+    except httpx.TimeoutException as e:
+        logger.error(
+            "Timeout ao chamar API Sales Builder",
+            error=str(e),
+            timeout_seconds=30.0,
+            payload=log_payload
+        )
+        return {"error": f"Timeout: {str(e)}"}
+    except httpx.RequestError as e:
+        logger.error(
+            "Erro de requisição ao chamar API Sales Builder",
+            error=str(e),
+            error_type=type(e).__name__,
+            payload=log_payload
+        )
+        return {"error": f"Request error: {str(e)}"}
     except Exception as e:
-        logger.error(f"Exceção ao chamar API Sales Builder: {str(e)}")
+        logger.error(
+            "Exceção ao chamar API Sales Builder",
+            error=str(e),
+            error_type=type(e).__name__,
+            payload=log_payload
+        )
         return {"error": f"Exception: {str(e)}"}
 
 # Endpoint principal para submissão de formulário
@@ -399,7 +455,7 @@ async def submit_form(form_data: FormSubmission):
                 "cargo_prospect": document["cargo_prospect"],
                 "email_prospect": document["email_prospect"],
                 "whatsapp_prospect": document["whatsapp_prospect"],
-                "faturamento_empresa": document["faturamento_empresa"],
+                "faturamento_prospect": document["faturamento_empresa"],
                 "nome_vendedor": "Vagner Campos",
                 "interacao": "Iniciar a conversa com lead à partir do P1"
             }
@@ -414,7 +470,12 @@ async def submit_form(form_data: FormSubmission):
             # Iniciar o processamento da task em segundo plano
             task_id = sales_builder_response.get("task_id")
             if task_id:
-                logger.info(f"Iniciando processamento da task {task_id} em segundo plano")
+                logger.info(
+                    "Task ID recebido do Sales Builder",
+                    task_id=task_id,
+                    document_id=str(result.inserted_id),
+                    whatsapp=clean_number
+                )
                 # Importar o módulo apenas quando necessário
                 try:
                     import sys
@@ -477,7 +538,11 @@ async def submit_form(form_data: FormSubmission):
                 "Error calling Sales Builder API", 
                 error=error_message,
                 error_type=type(api_error).__name__,
-                error_details=repr(api_error)
+                error_details=repr(api_error),
+                document_id=str(result.inserted_id),
+                whatsapp=clean_number,
+                nome_prospect=document["nome_prospect"],
+                empresa_prospect=document["empresa_prospect"]
             )
         
             return {

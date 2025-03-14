@@ -7,6 +7,8 @@ import os
 import re
 from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
+import structlog
+from datetime import datetime
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -39,12 +41,34 @@ except ImportError:
                 logging.warning(f"Stub: Enviando mensagem para {number}: {text[:50]}...")
                 return {"status": "error", "message": "EvolutionAPI não está disponível"}
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("sales_builder_status_checker")
+# Configuração de logging com structlog
+def setup_logging():
+    """
+    Configura o sistema de logging
+    
+    Utiliza a biblioteca structlog para gerar logs em formato JSON,
+    facilitando a integração com ferramentas de monitoramento.
+    """
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer()
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+setup_logging()
+logger = structlog.get_logger("sales_builder_status_checker")
 
 class SalesBuilderStatusChecker:
     """
@@ -120,53 +144,162 @@ class SalesBuilderStatusChecker:
             Dict contendo os dados da resposta ou None em caso de erro
         """
         url = f"{self.api_url}/status/{task_id}"
-        logger.info(f"Verificando status da task {task_id} na URL: {url}")
-        logger.info(f"Headers de autorização: {self.headers.get('Authorization', 'Não definido').replace(self.api_key, '***')}")
+        
+        # Máscara para log (mostra apenas os primeiros e últimos 5 caracteres)
+        masked_key = "Não definido"
+        if self.api_key:
+            masked_key = f"{self.api_key[:5]}...{self.api_key[-5:]}" if len(self.api_key) > 10 else "***"
+        
+        logger.info(
+            "Verificando status da task",
+            task_id=task_id,
+            url=url,
+            api_key_masked=masked_key
+        )
         
         retries = 0
         while retries < self.max_retries:
             try:
-                logger.info(f"Tentativa {retries+1} de {self.max_retries} para verificar task {task_id}")
+                start_time = datetime.utcnow()
+                logger.info(
+                    "Iniciando requisição para verificar status",
+                    task_id=task_id,
+                    attempt=retries+1,
+                    max_attempts=self.max_retries
+                )
+                
                 response = await self.client.get(url, timeout=self.timeout)
+                elapsed_time = (datetime.utcnow() - start_time).total_seconds()
                 
                 # Log da resposta para depuração
-                logger.info(f"Resposta da API: Status {response.status_code}")
+                logger.info(
+                    "Resposta recebida da API Sales Builder",
+                    task_id=task_id,
+                    status_code=response.status_code,
+                    elapsed_time_seconds=elapsed_time
+                )
                 
                 if response.status_code == 200:
-                    logger.info(f"Task {task_id} completada com sucesso")
                     response_data = response.json()
-                    logger.info(f"Dados da resposta: {response_data}")
+                    logger.info(
+                        "Task completada com sucesso",
+                        task_id=task_id,
+                        status_code=response.status_code,
+                        response_data=response_data
+                    )
                     return response_data
                 elif response.status_code == 403:
-                    logger.error(f"Erro de autorização (403): Verifique a chave de API do Sales Builder")
                     try:
                         error_data = response.json()
-                        logger.error(f"Detalhes do erro: {error_data}")
+                        logger.error(
+                            "Erro de autorização",
+                            task_id=task_id,
+                            status_code=response.status_code,
+                            error_details=error_data
+                        )
                     except:
-                        logger.error(f"Corpo da resposta: {response.text}")
+                        logger.error(
+                            "Erro de autorização",
+                            task_id=task_id,
+                            status_code=response.status_code,
+                            response_text=response.text
+                        )
                     return {"error": f"{response.status_code}: Erro de autorização", "task_id": task_id}
                 else:
-                    logger.warning(f"Resposta inesperada: Status {response.status_code}")
                     try:
                         error_data = response.json()
-                        logger.warning(f"Detalhes da resposta: {error_data}")
+                        logger.warning(
+                            "Resposta inesperada da API",
+                            task_id=task_id,
+                            status_code=response.status_code,
+                            error_details=error_data
+                        )
                     except:
-                        logger.warning(f"Corpo da resposta: {response.text}")
+                        logger.warning(
+                            "Resposta inesperada da API",
+                            task_id=task_id,
+                            status_code=response.status_code,
+                            response_text=response.text
+                        )
                 
             except httpx.TimeoutException:
-                logger.warning(f"Timeout ao verificar status da task {task_id}. Tentando novamente...")
-            except httpx.RequestError as e:
-                logger.error(f"Erro na requisição para verificar status da task {task_id}: {str(e)}")
-            except Exception as e:
-                logger.error(f"Erro inesperado ao verificar status da task {task_id}: {str(e)}")
+                logger.warning(
+                    "Timeout ao verificar status da task",
+                    task_id=task_id,
+                    attempt=retries+1,
+                    max_attempts=self.max_retries,
+                    timeout_seconds=self.timeout
+                )
+                retries += 1
+                if retries < self.max_retries:
+                    logger.info(
+                        "Aguardando para nova tentativa",
+                        task_id=task_id,
+                        retry_delay_seconds=self.retry_delay
+                    )
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    logger.error(
+                        "Número máximo de tentativas excedido",
+                        task_id=task_id,
+                        max_attempts=self.max_retries
+                    )
+                    return {"error": "Timeout ao verificar status da task", "task_id": task_id}
             
-            retries += 1
-            if retries < self.max_retries:
-                logger.info(f"Aguardando {self.retry_delay} segundos antes da próxima tentativa...")
-                await asyncio.sleep(self.retry_delay)
+            except httpx.RequestError as e:
+                logger.error(
+                    "Erro de requisição ao verificar status da task",
+                    task_id=task_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=retries+1,
+                    max_attempts=self.max_retries
+                )
+                retries += 1
+                if retries < self.max_retries:
+                    logger.info(
+                        "Aguardando para nova tentativa após erro de requisição",
+                        task_id=task_id,
+                        retry_delay_seconds=self.retry_delay
+                    )
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    logger.error(
+                        "Número máximo de tentativas excedido após erros de requisição",
+                        task_id=task_id,
+                        max_attempts=self.max_retries,
+                        error=str(e)
+                    )
+                    return {"error": f"Erro de requisição: {str(e)}", "task_id": task_id}
+            
+            except Exception as e:
+                logger.error(
+                    "Exceção inesperada ao verificar status da task",
+                    task_id=task_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=retries+1,
+                    max_attempts=self.max_retries
+                )
+                retries += 1
+                if retries < self.max_retries:
+                    logger.info(
+                        "Aguardando para nova tentativa após exceção",
+                        task_id=task_id,
+                        retry_delay_seconds=self.retry_delay
+                    )
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    logger.error(
+                        "Número máximo de tentativas excedido após exceções",
+                        task_id=task_id,
+                        max_attempts=self.max_retries,
+                        error=str(e)
+                    )
+                    return {"error": f"Exceção: {str(e)}", "task_id": task_id}
         
-        logger.error(f"Número máximo de tentativas excedido para a task {task_id}")
-        return {"error": "Número máximo de tentativas excedido", "task_id": task_id}
+        # Este código não deve ser alcançado devido aos retornos nos blocos de exceção
+        return {"error": "Falha ao verificar status da task após múltiplas tentativas", "task_id": task_id}
     
     async def process_task_response(self, task_data: Dict[str, Any]) -> bool:
         """
@@ -241,52 +374,111 @@ class SalesBuilderStatusChecker:
         Returns:
             bool: True se o processamento foi bem-sucedido, False caso contrário
         """
-        logger.info(f"Iniciando verificação e processamento da task {task_id}")
+        logger.info(
+            "Iniciando verificação e processamento da task",
+            task_id=task_id
+        )
+        
+        start_time = datetime.utcnow()
         
         try:
             # Verificar status da task
             task_data = await self.check_task_status(task_id)
             
             if not task_data:
-                logger.error(f"Não foi possível obter dados da task {task_id}")
+                logger.error(
+                    "Não foi possível obter dados da task",
+                    task_id=task_id,
+                    elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
+                )
                 return False
             
             # Verificar se há erro na resposta
             if "error" in task_data:
-                logger.error(f"Erro ao verificar status da task {task_id}: {task_data.get('error')}")
+                logger.error(
+                    "Erro ao verificar status da task",
+                    task_id=task_id,
+                    error=task_data.get('error'),
+                    elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
+                )
+                
                 # Se for erro de autorização, tentar recarregar a chave do .env
                 if "autorização" in task_data.get('error', '').lower() or "403" in task_data.get('error', ''):
-                    logger.info("Tentando recarregar a chave de API do .env e tentar novamente...")
+                    logger.info(
+                        "Tentando recarregar a chave de API do .env",
+                        task_id=task_id
+                    )
+                    
                     # Recarregar o .env para garantir que temos a chave mais recente
                     load_dotenv(override=True)
                     env_api_key = os.getenv("SALES_BUILDER_API_KEY")
                     
                     if env_api_key and env_api_key != self.api_key:
-                        logger.info("Encontrada nova chave de API no .env. Tentando novamente...")
+                        # Mascarar a chave para o log
+                        masked_old_key = f"{self.api_key[:5]}...{self.api_key[-5:]}" if self.api_key and len(self.api_key) > 10 else "***"
+                        masked_new_key = f"{env_api_key[:5]}...{env_api_key[-5:]}" if len(env_api_key) > 10 else "***"
+                        
+                        logger.info(
+                            "Encontrada nova chave de API no .env",
+                            task_id=task_id,
+                            old_key_masked=masked_old_key,
+                            new_key_masked=masked_new_key
+                        )
+                        
                         self.api_key = env_api_key
                         self.headers["Authorization"] = f"Bearer {self.api_key}"
                         self.client = httpx.AsyncClient(
                             timeout=self.timeout,
                             headers=self.headers
                         )
+                        
                         # Tentar novamente
-                        logger.info("Tentando verificar o status novamente com a nova chave...")
+                        logger.info(
+                            "Tentando verificar o status novamente com a nova chave",
+                            task_id=task_id
+                        )
+                        
                         task_data = await self.check_task_status(task_id)
                         if "error" in task_data:
-                            logger.error("Falha mesmo após atualizar a chave de API")
+                            logger.error(
+                                "Falha mesmo após atualizar a chave de API",
+                                task_id=task_id,
+                                error=task_data.get('error'),
+                                elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
+                            )
                             return False
                     else:
-                        logger.error("Não foi possível encontrar uma chave de API alternativa no .env")
+                        logger.error(
+                            "Não foi possível encontrar uma chave de API alternativa no .env",
+                            task_id=task_id,
+                            elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
+                        )
                         return False
                 else:
                     return False
             
             # Processar resposta da task
             success = await self.process_task_response(task_data)
+            
+            elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(
+                "Processamento da task concluído",
+                task_id=task_id,
+                success=success,
+                elapsed_time_seconds=elapsed_time
+            )
+            
             return success
             
         except Exception as e:
-            logger.error(f"Erro ao verificar e processar task {task_id}: {str(e)}")
+            elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+            logger.error(
+                "Erro ao verificar e processar task",
+                task_id=task_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                elapsed_time_seconds=elapsed_time
+            )
             return False
 
 
@@ -301,13 +493,38 @@ async def process_sales_builder_task(task_id: str, settings=None) -> bool:
     Returns:
         bool: True se o processamento foi bem-sucedido, False caso contrário
     """
-    logger.info(f"Processando task {task_id} do Sales Builder")
+    logger.info(
+        "Iniciando processamento de task do Sales Builder",
+        task_id=task_id,
+        settings_provided=settings is not None
+    )
+    
+    start_time = datetime.utcnow()
     
     # Criar o verificador com as configurações fornecidas
     checker = SalesBuilderStatusChecker(settings=settings)
     try:
         result = await checker.check_and_process_task(task_id)
+        
+        elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.info(
+            "Processamento de task do Sales Builder concluído",
+            task_id=task_id,
+            result=result,
+            elapsed_time_seconds=elapsed_time
+        )
+        
         return result
+    except Exception as e:
+        elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.error(
+            "Erro durante o processamento de task do Sales Builder",
+            task_id=task_id,
+            error=str(e),
+            error_type=type(e).__name__,
+            elapsed_time_seconds=elapsed_time
+        )
+        return False
     finally:
         await checker.close()
 
