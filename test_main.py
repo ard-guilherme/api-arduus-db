@@ -180,7 +180,7 @@ def test_submit_form_valid(client, mock_mongodb, mock_settings, mock_sales_build
     assert api_call_args["email_prospect"] == "teste@example.com"
     assert api_call_args["whatsapp_prospect"] == "5511987654321"
     assert api_call_args["empresa_prospect"] == "Empresa Teste"
-    assert api_call_args["faturamento_empresa"] == "1-5 milhões"
+    assert api_call_args["faturamento_prospect"] == "1-5 milhões"
     assert api_call_args["cargo_prospect"] == "Diretor"
 
 # Teste com API key inválida
@@ -281,7 +281,7 @@ def test_submit_form_any_revenue(client, mock_mongodb, mock_settings, mock_sales
     # Verificar se a API Sales Builder foi chamada corretamente
     mock_sales_builder_api.assert_called_once()
     api_call_args = mock_sales_builder_api.call_args[0][0]
-    assert api_call_args["faturamento_empresa"] == "Valor Personalizado"
+    assert api_call_args["faturamento_prospect"] == "Valor Personalizado"
 
 # Teste com número de WhatsApp formatado
 def test_submit_form_formatted_whatsapp(client, mock_mongodb, mock_settings, mock_sales_builder_api):
