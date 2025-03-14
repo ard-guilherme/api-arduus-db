@@ -13,3 +13,4 @@ httpx==0.27.0
 requests==2.31.0
 pydub==0.25.1
 openai==1.11.0
+pytz==2024.1
