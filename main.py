@@ -13,6 +13,8 @@ import httpx
 import asyncio
 from functools import partial
 from dotenv import load_dotenv
+import json
+from bson.objectid import ObjectId
 
 """
 API Arduus DB - Interface para o banco de dados MongoDB da Arduus
@@ -114,6 +116,15 @@ async def lifespan(app: FastAPI):
     app.mongodb_client = AsyncIOMotorClient(settings.MONGO_URI)
     app.db = app.mongodb_client[settings.DB_NAME]
     app.collection = app.db[settings.COLLECTION_NAME]
+    
+    # Criar collection para fila de requisições se não existir
+    app.request_queue = app.db["request_queue"]
+    
+    # Criar índices para a fila de requisições
+    await app.request_queue.create_index([("created_at", 1)])
+    await app.request_queue.create_index([("status", 1)])
+    await app.request_queue.create_index([("task_id", 1)], unique=True, sparse=True)
+    await app.request_queue.create_index([("whatsapp_prospect", 1)])
     
     # Criar índice para rate limiting
     await app.db.rate_limits.create_index(
@@ -273,8 +284,12 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
     api_url = settings.SALES_BUILDER_API_URL
     api_key = settings.SALES_BUILDER_API_KEY
     
+    # Log detalhado da URL e configurações
+    print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - URL: {api_url}")
+    
     if not api_key:
         logger.warning("Chave da API do Sales Builder não configurada. Pulando chamada à API.")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - ERRO: API key não configurada")
         return {"error": "API key not configured"}
     
     # Máscara para log (mostra apenas os primeiros e últimos 5 caracteres)
@@ -294,6 +309,9 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
         if len(whatsapp) > 6:
             log_payload["whatsapp_prospect"] = f"{whatsapp[:4]}***{whatsapp[-2:]}"
     
+    # Log detalhado do payload completo (sem mascaramento para debug)
+    print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - PAYLOAD COMPLETO: {json.dumps(lead_data, ensure_ascii=False)}")
+    
     logger.info(
         "Iniciando chamada à API Sales Builder",
         url=api_url,
@@ -306,20 +324,47 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
         "Authorization": f"Bearer {api_key}"
     }
     
+    # Log detalhado dos headers (com API key mascarada)
+    headers_log = headers.copy()
+    if "Authorization" in headers_log:
+        auth_parts = headers_log["Authorization"].split(" ")
+        if len(auth_parts) > 1:
+            headers_log["Authorization"] = f"{auth_parts[0]} {masked_key}"
+    
+    print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - HEADERS: {json.dumps(headers_log)}")
+    
     try:
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - INICIANDO REQUISIÇÃO HTTP")
         start_time = datetime.utcnow()
+        
+        # Log do timeout configurado
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TIMEOUT CONFIGURADO: 30.0 segundos")
+        
         async with httpx.AsyncClient() as client:
+            print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - CLIENTE HTTP CRIADO")
+            
+            # Log antes de enviar a requisição
+            print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - ENVIANDO REQUISIÇÃO POST")
+            
             response = await client.post(
                 api_url,
                 json=lead_data,
                 headers=headers,
                 timeout=30.0
             )
+            
+            # Log após receber a resposta
+            print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - RESPOSTA RECEBIDA: Status {response.status_code}")
         
         elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TEMPO DE RESPOSTA: {elapsed_time:.2f} segundos")
             
         if response.status_code == 200:
             response_data = response.json()
+            
+            # Log detalhado da resposta
+            print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - RESPOSTA COMPLETA: {json.dumps(response_data, ensure_ascii=False)}")
+            
             logger.info(
                 "Chamada à API Sales Builder bem-sucedida",
                 status_code=response.status_code,
@@ -328,6 +373,10 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
             )
             return response_data
         else:
+            # Log detalhado do erro
+            print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - ERRO HTTP: Status {response.status_code}")
+            print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - CORPO DA RESPOSTA DE ERRO: {response.text}")
+            
             logger.error(
                 "Erro na chamada à API Sales Builder",
                 status_code=response.status_code,
@@ -338,26 +387,53 @@ async def call_sales_builder_api(lead_data: dict, settings: Settings) -> dict:
             return {"error": f"API error: {response.status_code}", "details": response.text}
             
     except httpx.TimeoutException as e:
+        elapsed_time = (datetime.utcnow() - start_time).total_seconds() if 'start_time' in locals() else 0
+        
+        # Log detalhado do timeout
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TIMEOUT APÓS {elapsed_time:.2f} SEGUNDOS")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - DETALHES DO TIMEOUT: {str(e)}")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TIPO DE EXCEÇÃO: {type(e).__name__}")
+        
         logger.error(
             "Timeout ao chamar API Sales Builder",
             error=str(e),
             timeout_seconds=30.0,
+            elapsed_time_seconds=elapsed_time,
             payload=log_payload
         )
         return {"error": f"Timeout: {str(e)}"}
     except httpx.RequestError as e:
+        elapsed_time = (datetime.utcnow() - start_time).total_seconds() if 'start_time' in locals() else 0
+        
+        # Log detalhado do erro de requisição
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - ERRO DE REQUISIÇÃO APÓS {elapsed_time:.2f} SEGUNDOS")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - DETALHES DO ERRO: {str(e)}")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TIPO DE EXCEÇÃO: {type(e).__name__}")
+        
         logger.error(
             "Erro de requisição ao chamar API Sales Builder",
             error=str(e),
             error_type=type(e).__name__,
+            elapsed_time_seconds=elapsed_time,
             payload=log_payload
         )
         return {"error": f"Request error: {str(e)}"}
     except Exception as e:
+        elapsed_time = (datetime.utcnow() - start_time).total_seconds() if 'start_time' in locals() else 0
+        
+        # Log detalhado da exceção genérica
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - EXCEÇÃO INESPERADA APÓS {elapsed_time:.2f} SEGUNDOS")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - DETALHES DA EXCEÇÃO: {str(e)}")
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TIPO DE EXCEÇÃO: {type(e).__name__}")
+        import traceback
+        print(f"[{datetime.now().isoformat()}] SALES BUILDER DEBUG - TRACEBACK: {traceback.format_exc()}")
+        
         logger.error(
             "Exceção ao chamar API Sales Builder",
             error=str(e),
             error_type=type(e).__name__,
+            elapsed_time_seconds=elapsed_time,
+            traceback=traceback.format_exc(),
             payload=log_payload
         )
         return {"error": f"Exception: {str(e)}"}
@@ -414,6 +490,22 @@ async def submit_form(form_data: FormSubmission):
                 detail="Número de WhatsApp inválido mesmo após limpeza. Deve conter apenas dígitos."
             )
         
+        # Criar um registro na fila de requisições
+        request_id = await app.request_queue.insert_one({
+            "whatsapp_prospect": clean_number,
+            "nome_prospect": form_data.nome_prospect,
+            "created_at": datetime.utcnow(),
+            "status": "received",
+            "steps": [
+                {
+                    "step": "received",
+                    "timestamp": datetime.utcnow(),
+                    "success": True,
+                    "message": "Requisição recebida"
+                }
+            ]
+        })
+        
         # Verificar se o número de WhatsApp já existe na coleção
         existing_lead = await app.collection.find_one({"whatsapp_prospect": clean_number})
         
@@ -421,13 +513,35 @@ async def submit_form(form_data: FormSubmission):
             logger.info(
                 "Lead already exists, skipping insertion", 
                 whatsapp=clean_number,
-                existing_id=str(existing_lead["_id"])
+                existing_id=str(existing_lead["_id"]),
+                request_id=str(request_id.inserted_id)
+            )
+            
+            # Log no console
+            print(f"[{datetime.now().isoformat()}] LEAD DUPLICADO: Número {clean_number} já existe no banco com ID {str(existing_lead['_id'])}")
+            
+            # Atualizar status na fila
+            await app.request_queue.update_one(
+                {"_id": request_id.inserted_id},
+                {
+                    "$set": {"status": "duplicate"},
+                    "$push": {
+                        "steps": {
+                            "step": "duplicate_check",
+                            "timestamp": datetime.utcnow(),
+                            "success": True,
+                            "message": "Lead já existe no banco de dados",
+                            "document_id": str(existing_lead["_id"])
+                        }
+                    }
+                }
             )
             
             return {
                 "message": "Lead já existe no banco de dados",
                 "document_id": str(existing_lead["_id"]),
-                "is_duplicate": True
+                "is_duplicate": True,
+                "request_id": str(request_id.inserted_id)
             }
         
         document = {
@@ -441,10 +555,36 @@ async def submit_form(form_data: FormSubmission):
             "spiced_stage": "P1"
         }
         
+        # Log no console antes da inserção
+        print(f"[{datetime.now().isoformat()}] INICIANDO ARMAZENAMENTO: Salvando lead {document['nome_prospect']} no MongoDB")
+        
         # Inserir o lead no MongoDB
         result = await app.collection.insert_one(document)
         
-        logger.info("Form submitted", document_id=str(result.inserted_id))
+        # Atualizar status na fila
+        await app.request_queue.update_one(
+            {"_id": request_id.inserted_id},
+            {
+                "$set": {"status": "stored"},
+                "$push": {
+                    "steps": {
+                        "step": "mongodb_storage",
+                        "timestamp": datetime.utcnow(),
+                        "success": True,
+                        "message": "Lead armazenado no MongoDB",
+                        "document_id": str(result.inserted_id)
+                    }
+                }
+            }
+        )
+        
+        # Log no console após a inserção
+        print(f"[{datetime.now().isoformat()}] ARMAZENAMENTO CONCLUÍDO: Lead salvo com ID {str(result.inserted_id)}")
+        
+        logger.info("Form submitted", document_id=str(result.inserted_id), request_id=str(request_id.inserted_id))
+        
+        # Log no console antes de chamar a API Sales Builder
+        print(f"[{datetime.now().isoformat()}] INICIANDO INTEGRAÇÃO: Preparando chamada para Sales Builder API")
         
         # Chamar a API Sales Builder
         try:
@@ -460,21 +600,87 @@ async def submit_form(form_data: FormSubmission):
                 "interacao": "Iniciar a conversa com lead à partir do P1"
             }
             
+            # Log no console com o payload
+            print(f"[{datetime.now().isoformat()}] PAYLOAD SALES BUILDER: {json.dumps(sales_builder_payload, ensure_ascii=False)}")
+            
+            # Atualizar status na fila
+            await app.request_queue.update_one(
+                {"_id": request_id.inserted_id},
+                {
+                    "$set": {"status": "calling_sales_builder"},
+                    "$push": {
+                        "steps": {
+                            "step": "calling_sales_builder",
+                            "timestamp": datetime.utcnow(),
+                            "success": True,
+                            "message": "Chamando API Sales Builder",
+                            "payload": sales_builder_payload
+                        }
+                    }
+                }
+            )
+            
             sales_builder_response = await call_sales_builder_api(sales_builder_payload, settings)
+            
+            # Log no console após a chamada
+            print(f"[{datetime.now().isoformat()}] RESPOSTA SALES BUILDER: {json.dumps(sales_builder_response, ensure_ascii=False)}")
+            
+            # Atualizar status na fila
+            await app.request_queue.update_one(
+                {"_id": request_id.inserted_id},
+                {
+                    "$set": {
+                        "status": "sales_builder_response_received",
+                        "sales_builder_response": sales_builder_response
+                    },
+                    "$push": {
+                        "steps": {
+                            "step": "sales_builder_response",
+                            "timestamp": datetime.utcnow(),
+                            "success": "error" not in sales_builder_response,
+                            "message": "Resposta recebida do Sales Builder",
+                            "response": sales_builder_response
+                        }
+                    }
+                }
+            )
+            
             logger.info(
                 "Sales Builder API called successfully", 
                 response=sales_builder_response,
-                task_id=sales_builder_response.get("task_id")
+                task_id=sales_builder_response.get("task_id"),
+                request_id=str(request_id.inserted_id)
             )
             
             # Iniciar o processamento da task em segundo plano
             task_id = sales_builder_response.get("task_id")
             if task_id:
+                # Atualizar task_id na fila
+                await app.request_queue.update_one(
+                    {"_id": request_id.inserted_id},
+                    {
+                        "$set": {"task_id": task_id},
+                        "$push": {
+                            "steps": {
+                                "step": "task_id_received",
+                                "timestamp": datetime.utcnow(),
+                                "success": True,
+                                "message": "Task ID recebido",
+                                "task_id": task_id
+                            }
+                        }
+                    }
+                )
+                
+                # Log no console para o task_id
+                print(f"[{datetime.now().isoformat()}] TASK ID RECEBIDO: {task_id} para o lead {document['nome_prospect']}")
+                
                 logger.info(
                     "Task ID recebido do Sales Builder",
                     task_id=task_id,
                     document_id=str(result.inserted_id),
-                    whatsapp=clean_number
+                    whatsapp=clean_number,
+                    request_id=str(request_id.inserted_id)
                 )
                 # Importar o módulo apenas quando necessário
                 try:
@@ -493,16 +699,34 @@ async def submit_form(form_data: FormSubmission):
                     ])
                     
                     if not evo_config_present:
+                        # Atualizar status na fila
+                        await app.request_queue.update_one(
+                            {"_id": request_id.inserted_id},
+                            {
+                                "$set": {"status": "evolution_api_config_missing"},
+                                "$push": {
+                                    "steps": {
+                                        "step": "evolution_api_check",
+                                        "timestamp": datetime.utcnow(),
+                                        "success": False,
+                                        "message": "Configurações da Evolution API incompletas"
+                                    }
+                                }
+                            }
+                        )
+                        
                         logger.warning(
                             "Configurações da Evolution API incompletas. Pulando processamento da task.",
                             subdomain=settings.EVO_SUBDOMAIN,
                             instance=settings.EVO_INSTANCE,
-                            token_present=bool(settings.EVO_TOKEN)
+                            token_present=bool(settings.EVO_TOKEN),
+                            request_id=str(request_id.inserted_id)
                         )
                         return {
                             "message": "Formulário recebido com sucesso",
                             "document_id": str(result.inserted_id),
                             "sales_builder_task_id": task_id,
+                            "request_id": str(request_id.inserted_id),
                             "warning": "Processamento da task pulado devido a configurações incompletas da Evolution API"
                         }
                     
@@ -511,29 +735,122 @@ async def submit_form(form_data: FormSubmission):
                         "Configurações da Evolution API",
                         subdomain=settings.EVO_SUBDOMAIN,
                         instance=settings.EVO_INSTANCE,
-                        token_present=bool(settings.EVO_TOKEN)
+                        token_present=bool(settings.EVO_TOKEN),
+                        request_id=str(request_id.inserted_id)
+                    )
+                    
+                    # Atualizar status na fila
+                    await app.request_queue.update_one(
+                        {"_id": request_id.inserted_id},
+                        {
+                            "$set": {"status": "processing_task"},
+                            "$push": {
+                                "steps": {
+                                    "step": "evolution_api_check",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": True,
+                                    "message": "Configurações da Evolution API verificadas"
+                                }
+                            }
+                        }
                     )
                     
                     from sales_builder_status_checker import process_sales_builder_task
-                    # Criar uma task em segundo plano para processar a resposta, passando as configurações
-                    process_task_with_settings = partial(process_sales_builder_task, settings=settings)
+                    # Criar uma task em segundo plano para processar a resposta, passando as configurações e o request_id
+                    process_task_with_settings = partial(
+                        process_sales_builder_task, 
+                        settings=settings,
+                        request_id=str(request_id.inserted_id),
+                        mongodb_uri=settings.MONGO_URI,
+                        db_name=settings.DB_NAME
+                    )
                     
                     # Criar a task em segundo plano
+                    print(f"[{datetime.now().isoformat()}] INICIANDO PROCESSAMENTO ASSÍNCRONO: Task {task_id} para o número {clean_number}")
                     asyncio.create_task(process_task_with_settings(task_id))
+                    
+                    # Atualizar status na fila
+                    await app.request_queue.update_one(
+                        {"_id": request_id.inserted_id},
+                        {
+                            "$push": {
+                                "steps": {
+                                    "step": "task_processing_started",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": True,
+                                    "message": "Processamento da task iniciado em segundo plano"
+                                }
+                            }
+                        }
+                    )
                 except ImportError as e:
-                    logger.error(f"Erro ao importar módulo sales_builder_status_checker: {str(e)}")
-                    logger.info(f"PYTHONPATH atual: {sys.path}")
+                    # Atualizar status na fila
+                    await app.request_queue.update_one(
+                        {"_id": request_id.inserted_id},
+                        {
+                            "$set": {"status": "import_error"},
+                            "$push": {
+                                "steps": {
+                                    "step": "import_error",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": False,
+                                    "message": f"Erro ao importar módulo: {str(e)}"
+                                }
+                            }
+                        }
+                    )
+                    
+                    logger.error(f"Erro ao importar módulo sales_builder_status_checker: {str(e)}", request_id=str(request_id.inserted_id))
+                    logger.info(f"PYTHONPATH atual: {sys.path}", request_id=str(request_id.inserted_id))
                 except Exception as e:
-                    logger.error(f"Erro ao iniciar processamento da task: {str(e)}")
+                    # Atualizar status na fila
+                    await app.request_queue.update_one(
+                        {"_id": request_id.inserted_id},
+                        {
+                            "$set": {"status": "task_processing_error"},
+                            "$push": {
+                                "steps": {
+                                    "step": "task_processing_error",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": False,
+                                    "message": f"Erro ao iniciar processamento da task: {str(e)}"
+                                }
+                            }
+                        }
+                    )
+                    
+                    logger.error(f"Erro ao iniciar processamento da task: {str(e)}", request_id=str(request_id.inserted_id))
             
             return {
                 "message": "Formulário recebido com sucesso",
                 "document_id": str(result.inserted_id),
-                "sales_builder_task_id": task_id
+                "sales_builder_task_id": task_id,
+                "request_id": str(request_id.inserted_id)
             }
         except Exception as api_error:
             # Registrar o erro, mas não falhar a requisição
             error_message = str(api_error)
+            
+            # Atualizar status na fila
+            await app.request_queue.update_one(
+                {"_id": request_id.inserted_id},
+                {
+                    "$set": {"status": "sales_builder_api_error"},
+                    "$push": {
+                        "steps": {
+                            "step": "sales_builder_api_error",
+                            "timestamp": datetime.utcnow(),
+                            "success": False,
+                            "message": f"Erro ao chamar API Sales Builder: {error_message}",
+                            "error_type": type(api_error).__name__
+                        }
+                    }
+                }
+            )
+            
+            # Log no console para o erro
+            print(f"[{datetime.now().isoformat()}] ERRO NA INTEGRAÇÃO SALES BUILDER: {error_message}")
+            
             logger.error(
                 "Error calling Sales Builder API", 
                 error=error_message,
@@ -542,13 +859,15 @@ async def submit_form(form_data: FormSubmission):
                 document_id=str(result.inserted_id),
                 whatsapp=clean_number,
                 nome_prospect=document["nome_prospect"],
-                empresa_prospect=document["empresa_prospect"]
+                empresa_prospect=document["empresa_prospect"],
+                request_id=str(request_id.inserted_id)
             )
         
             return {
                 "message": "Formulário recebido com sucesso, mas houve um erro ao iniciar o processo de interação",
                 "document_id": str(result.inserted_id),
-                "sales_builder_error": error_message
+                "sales_builder_error": error_message,
+                "request_id": str(request_id.inserted_id)
             }
         
     except Exception as e:
@@ -575,3 +894,188 @@ async def health_check() -> dict[str, str]:
         dict: Status da API
     """
     return {"status": "online"}
+
+# Endpoint para consultar o status de uma requisição específica
+@app.get(
+    "/request-status/{request_id}",
+    summary="Consulta o status de uma requisição",
+    response_description="Detalhes da requisição",
+    tags=["Monitoramento"]
+)
+async def get_request_status(request_id: str):
+    """
+    Consulta o status de uma requisição específica.
+    
+    Args:
+        request_id: ID da requisição
+        
+    Returns:
+        dict: Detalhes da requisição
+        
+    Raises:
+        HTTPException 404: Se a requisição não for encontrada
+    """
+    try:
+        # Buscar a requisição no MongoDB
+        request = await app.request_queue.find_one({"_id": ObjectId(request_id)})
+        
+        if not request:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requisição não encontrada"
+            )
+        
+        # Converter ObjectId para string
+        request["_id"] = str(request["_id"])
+        
+        # Converter timestamps para string ISO
+        if "created_at" in request:
+            request["created_at"] = request["created_at"].isoformat()
+        
+        if "steps" in request:
+            for step in request["steps"]:
+                if "timestamp" in step:
+                    step["timestamp"] = step["timestamp"].isoformat()
+        
+        return request
+    except Exception as e:
+        logger.error(f"Erro ao consultar status da requisição: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao consultar status da requisição: {str(e)}"
+        )
+
+# Endpoint para listar requisições com filtros
+@app.get(
+    "/request-queue/",
+    summary="Lista requisições na fila",
+    response_description="Lista de requisições",
+    tags=["Monitoramento"]
+)
+async def list_requests(
+    status: Optional[str] = None,
+    whatsapp: Optional[str] = None,
+    task_id: Optional[str] = None,
+    limit: int = 50,
+    skip: int = 0
+):
+    """
+    Lista requisições na fila com filtros opcionais.
+    
+    Args:
+        status: Filtrar por status
+        whatsapp: Filtrar por número de WhatsApp
+        task_id: Filtrar por ID da task
+        limit: Limite de resultados (máximo 100)
+        skip: Número de resultados para pular
+        
+    Returns:
+        dict: Lista de requisições e contagem total
+    """
+    try:
+        # Limitar o número máximo de resultados
+        if limit > 100:
+            limit = 100
+        
+        # Construir o filtro
+        filter_query = {}
+        if status:
+            filter_query["status"] = status
+        if whatsapp:
+            filter_query["whatsapp_prospect"] = whatsapp
+        if task_id:
+            filter_query["task_id"] = task_id
+        
+        # Contar o total de requisições
+        total = await app.request_queue.count_documents(filter_query)
+        
+        # Buscar as requisições
+        cursor = app.request_queue.find(filter_query).sort("created_at", -1).skip(skip).limit(limit)
+        
+        # Converter para lista
+        requests = []
+        async for request in cursor:
+            # Converter ObjectId para string
+            request["_id"] = str(request["_id"])
+            
+            # Converter timestamps para string ISO
+            if "created_at" in request:
+                request["created_at"] = request["created_at"].isoformat()
+            
+            # Simplificar a resposta para não sobrecarregar
+            if "steps" in request:
+                request["step_count"] = len(request["steps"])
+                request["last_step"] = request["steps"][-1] if request["steps"] else None
+                if request["last_step"] and "timestamp" in request["last_step"]:
+                    request["last_step"]["timestamp"] = request["last_step"]["timestamp"].isoformat()
+                # Remover os steps completos para reduzir o tamanho da resposta
+                del request["steps"]
+            
+            requests.append(request)
+        
+        return {
+            "total": total,
+            "limit": limit,
+            "skip": skip,
+            "requests": requests
+        }
+    except Exception as e:
+        logger.error(f"Erro ao listar requisições: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao listar requisições: {str(e)}"
+        )
+
+# Endpoint para obter estatísticas das requisições
+@app.get(
+    "/request-queue/stats",
+    summary="Estatísticas das requisições",
+    response_description="Estatísticas agrupadas por status",
+    tags=["Monitoramento"]
+)
+async def get_request_stats():
+    """
+    Obtém estatísticas das requisições agrupadas por status.
+    
+    Returns:
+        dict: Estatísticas das requisições
+    """
+    try:
+        # Obter contagem por status
+        pipeline = [
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        
+        status_counts = []
+        async for doc in app.request_queue.aggregate(pipeline):
+            status_counts.append({
+                "status": doc["_id"],
+                "count": doc["count"]
+            })
+        
+        # Obter contagem total
+        total = await app.request_queue.count_documents({})
+        
+        # Obter contagem de erros
+        error_count = await app.request_queue.count_documents({
+            "status": {"$regex": "error", "$options": "i"}
+        })
+        
+        # Obter contagem de requisições recentes (últimas 24h)
+        recent_count = await app.request_queue.count_documents({
+            "created_at": {"$gte": datetime.utcnow() - timedelta(days=1)}
+        })
+        
+        return {
+            "total": total,
+            "error_count": error_count,
+            "recent_count": recent_count,
+            "by_status": status_counts
+        }
+    except Exception as e:
+        logger.error(f"Erro ao obter estatísticas: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao obter estatísticas: {str(e)}"
+        )

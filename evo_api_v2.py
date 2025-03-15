@@ -98,38 +98,65 @@ class EvolutionAPI:
 
     def send_text_message(self, number, text, **kwargs):
         url = f"https://{self.evo_subdomain}/message/sendText/{self.evo_instance}"
-
+        
+        # Log no console
+        print(f"[{datetime.now().isoformat()}] EVOLUTION API - PREPARANDO MENSAGEM: Para {number}")
+        
+        # Verificar se a API está configurada
+        if not self.is_configured:
+            logging.error("Evolution API não está configurada corretamente. Não é possível enviar mensagens.")
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Configuração incompleta")
+            return {"status": "error", "message": "Evolution API não está configurada corretamente"}
+        
+        # Calcular o tempo de digitação
+        typing_time = self.estimate_typing_time(text, typing_speed=207)
+        
         payload = {
             "number": number,
             "text": text,
-            "delay": self.estimate_typing_time(text, typing_speed=207),
+            "delay": typing_time
         }
-
+        
+        # Adicionar opções adicionais
         for key, value in kwargs.items():
             payload[key] = value
-
+        
         try:
+            # Log no console antes de enviar
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIANDO: Mensagem para {number} (tempo de digitação: {typing_time}ms)")
+            
             logging.info(f"[EVO_API] Enviando mensagem para {number}: '{text[:50]}...'")
             logging.debug(f"[EVO_API] URL: {url}, Payload: {json.dumps(payload)[:200]}...")
             
             response = requests.post(url, json=payload, headers=self.headers)
             
-            if response.status_code == 200:
+            # Log no console após enviar
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIADO: Status {response.status_code} para {number}")
+            
+            # Tratar status 200 e 201 como sucesso (201 = Created)
+            if response.status_code in [200, 201]:
                 logging.info(f"[EVO_API] Mensagem enviada com sucesso para {number}. Status: {response.status_code}")
-                response_data = response.json()
-                logging.debug(f"[EVO_API] Resposta: {json.dumps(response_data)[:200]}...")
-                return response_data
+                try:
+                    response_data = response.json()
+                    logging.debug(f"[EVO_API] Resposta: {json.dumps(response_data)[:200]}...")
+                    return response_data
+                except ValueError:
+                    # Se não conseguir parsear JSON, retorna um dicionário com a resposta em texto
+                    logging.warning(f"[EVO_API] Resposta não é um JSON válido: {response.text[:200]}...")
+                    return {"status": "success", "raw_response": response.text[:200]}
             else:
                 logging.error(f"[EVO_API] Falha ao enviar mensagem. Status: {response.status_code}, Resposta: {response.text[:200]}...")
-                response.raise_for_status()
-                return None
-                
+                print(f"[{datetime.now().isoformat()}] EVOLUTION API - ALERTA: Resposta inesperada {response.status_code}")
+                # Não chamar raise_for_status() aqui para evitar exceção
+                return {"status": "error", "status_code": response.status_code, "message": response.text[:200]}
         except requests.exceptions.RequestException as e:
             logging.error(f"[EVO_API] Erro na requisição: {str(e)}")
-            return None
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Falha ao enviar mensagem para {number}: {str(e)}")
+            return {"status": "error", "message": str(e)}
         except Exception as e:
             logging.error(f"[EVO_API] Erro inesperado: {str(e)}")
-            return None
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Exceção inesperada: {str(e)}")
+            return {"status": "error", "message": str(e)}
 
 
     def send_status_message(self, type_content, content, **kwargs):

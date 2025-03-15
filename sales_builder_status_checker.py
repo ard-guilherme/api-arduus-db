@@ -12,6 +12,7 @@ import structlog
 from datetime import datetime, timezone
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson.objectid import ObjectId
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -80,15 +81,15 @@ class SalesBuilderStatusChecker:
     """
     
     def __init__(self, api_url: str = "https://sales-builder.ornexus.com", api_key: str = None, 
-                 max_retries: int = 100, retry_delay: int = 10, timeout: int = 60, settings=None):
+                 max_retries: int = 20, retry_delay: int = 15, timeout: int = 60, settings=None):
         """
         Inicializa o verificador de status do Sales Builder.
         
         Args:
             api_url: URL base da API Sales Builder
             api_key: Chave de API para autenticação (opcional)
-            max_retries: Número máximo de tentativas em caso de erro (padrão: 100)
-            retry_delay: Tempo de espera entre tentativas em segundos (padrão: 10)
+            max_retries: Número máximo de tentativas em caso de erro (padrão: 20)
+            retry_delay: Tempo de espera entre tentativas em segundos (padrão: 15)
             timeout: Timeout da requisição HTTP (em segundos)
             settings: Configurações da aplicação principal (opcional)
         """
@@ -214,6 +215,8 @@ class SalesBuilderStatusChecker:
                             elapsed_total_seconds=elapsed_total
                         )
                         print(f"[{datetime.now().isoformat()}] STATUS OBTIDO: Task {task_id} completada com sucesso após {elapsed_total:.2f}s")
+                        # Incluir status_code na resposta
+                        response_data["status_code"] = response.status_code
                         return response_data
                     else:
                         logger.warning(
@@ -222,7 +225,7 @@ class SalesBuilderStatusChecker:
                             status_code=response.status_code,
                             elapsed_total_seconds=elapsed_total
                         )
-                        print(f"[{datetime.now().isoformat()}] AGUARDANDO MENSAGENS: Task {task_id} retornou status 200 mas não contém mensagens. Aguardando 30s para nova tentativa.")
+                        print(f"[{datetime.now().isoformat()}] AGUARDANDO MENSAGENS: Task {task_id} retornou status 200 mas não contém mensagens. Aguardando {self.retry_delay}s para nova tentativa.")
                         
                         # Incrementar contador de tentativas
                         retries += 1
@@ -236,10 +239,12 @@ class SalesBuilderStatusChecker:
                                 elapsed_total_seconds=elapsed_total
                             )
                             print(f"[{datetime.now().isoformat()}] MÁXIMO DE TENTATIVAS: {self.max_retries} tentativas de verificação da task {task_id} falharam após {elapsed_total:.2f}s")
-                            return {"error": "Timeout aguardando mensagens da task", "task_id": task_id}
+                            # Retornar resposta com status_code para acionar o fallback
+                            response_data["status_code"] = response.status_code
+                            return response_data
                         
-                        # Aguardar 30 segundos antes da próxima tentativa
-                        await asyncio.sleep(30)
+                        # Aguardar antes da próxima tentativa
+                        await asyncio.sleep(self.retry_delay)
                         continue
                 elif response.status_code == 403:
                     try:
@@ -548,11 +553,29 @@ class SalesBuilderStatusChecker:
             whatsapp = result.get("whatsapp_prospect")
             messages = result.get("msg_resposta", [])
             
-            if not whatsapp or not messages:
-                logger.error(f"Dados incompletos na task: {task_data}")
-                print(f"[{datetime.now().isoformat()}] DADOS INCOMPLETOS: Falta número de WhatsApp ou mensagens na task {task_id}")
-                return False
+            # Fallback: Se a task retornou 200 e msg_resposta está vazia, usar mensagens padrão
+            if task_data.get("status_code") == 200 and isinstance(messages, list) and len(messages) == 0:
+                logger.info("Task retornou 200 com lista de mensagens vazia. Usando mensagens padrão de fallback.")
+                print(f"[{datetime.now().isoformat()}] FALLBACK: Task retornou 200 com msg_resposta vazia. Usando mensagens padrão.")
+                messages = [
+                    "Oi, tudo bem? Aqui é o Vagner Campos, fundador da Arduus. Vi seu interesse em inovação e transformação digital no LinkedIn, especialmente na área de IA.",
+                    "Percebi que você entrou em contato conosco para conhecer mais sobre nossas soluções de IA generativa. Gostaria de saber mais sobre como podemos impulsionar sua transformação digital?"
+                ]
                 
+                # Atualizar o task_data com as mensagens de fallback para que sejam armazenadas na fila
+                if "result" in task_data:
+                    task_data["result"]["msg_resposta"] = messages
+                    task_data["fallback_messages_used"] = True
+            elif not messages:
+                logger.error(f"Dados incompletos na task: {task_data}")
+                print(f"[{datetime.now().isoformat()}] DADOS INCOMPLETOS: Faltam mensagens na task {task_id}")
+                return False
+            
+            if not whatsapp:
+                logger.error(f"Dados incompletos na task: {task_data}")
+                print(f"[{datetime.now().isoformat()}] DADOS INCOMPLETOS: Falta número de WhatsApp na task {task_id}")
+                return False
+            
             # Verificar se o número de WhatsApp está em um formato válido
             if not whatsapp.isdigit():
                 logger.warning(f"Número de WhatsApp inválido: {whatsapp}. Tentando limpar...")
@@ -608,12 +631,14 @@ class SalesBuilderStatusChecker:
             print(f"[{datetime.now().isoformat()}] TRACEBACK: {traceback.format_exc()}")
             return False
     
-    async def check_and_process_task(self, task_id: str) -> bool:
+    async def check_and_process_task(self, task_id: str, request_queue=None, request_id=None) -> bool:
         """
         Verifica o status de uma task e processa a resposta.
         
         Args:
             task_id: ID da task a ser verificada e processada
+            request_queue: Referência à coleção de fila de requisições (opcional)
+            request_id: ID da requisição na fila (opcional)
             
         Returns:
             bool: True se o processamento foi bem-sucedido, False caso contrário
@@ -646,43 +671,39 @@ class SalesBuilderStatusChecker:
                     elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
                 )
                 
-                # Se for erro de autorização, tentar recarregar a chave do .env
-                if "autorização" in task_data.get('error', '').lower() or "403" in task_data.get('error', ''):
-                    logger.info(
-                        "Tentando recarregar a chave de API do .env",
+                # Verificar se é um erro de autorização (403) e tentar atualizar a chave de API
+                if "403" in task_data.get('error', ''):
+                    logger.warning(
+                        "Erro de autorização (403). Tentando atualizar a chave de API.",
                         task_id=task_id
                     )
                     
-                    # Recarregar o .env para garantir que temos a chave mais recente
-                    load_dotenv(override=True)
-                    env_api_key = os.getenv("SALES_BUILDER_API_KEY")
-                    
-                    if env_api_key and env_api_key != self.api_key:
-                        # Mascarar a chave para o log
-                        masked_old_key = f"{self.api_key[:5]}...{self.api_key[-5:]}" if self.api_key and len(self.api_key) > 10 else "***"
-                        masked_new_key = f"{env_api_key[:5]}...{env_api_key[-5:]}" if len(env_api_key) > 10 else "***"
-                        
+                    # Tentar obter uma chave de API alternativa do .env
+                    alt_api_key = os.getenv("SALES_BUILDER_API_KEY_ALT")
+                    if alt_api_key:
                         logger.info(
-                            "Encontrada nova chave de API no .env",
-                            task_id=task_id,
-                            old_key_masked=masked_old_key,
-                            new_key_masked=masked_new_key
+                            "Chave de API alternativa encontrada. Tentando novamente.",
+                            task_id=task_id
                         )
                         
-                        self.api_key = env_api_key
-                        self.headers["Authorization"] = f"Bearer {self.api_key}"
+                        # Atualizar a chave de API do verificador
+                        self.api_key = alt_api_key
+                        self.headers["Authorization"] = f"Bearer {alt_api_key}"
+                        
+                        # Recriar o cliente HTTP com os novos headers
+                        await self.client.aclose()
                         self.client = httpx.AsyncClient(
                             timeout=self.timeout,
                             headers=self.headers
                         )
                         
-                        # Tentar novamente
+                        # Tentar verificar o status novamente
                         logger.info(
-                            "Tentando verificar o status novamente com a nova chave",
+                            "Tentando verificar status novamente com a nova chave de API",
                             task_id=task_id
                         )
-                        
                         task_data = await self.check_task_status(task_id)
+                        
                         if "error" in task_data:
                             logger.error(
                                 "Falha mesmo após atualizar a chave de API",
@@ -700,6 +721,52 @@ class SalesBuilderStatusChecker:
                         return False
                 else:
                     return False
+            
+            # Armazenar a msg_resposta na tabela da fila de processamento se disponível
+            if request_queue is not None and request_id is not None and "result" in task_data and task_data["result"]:
+                # Extrair as mensagens da resposta
+                messages = []
+                if "msg_resposta" in task_data["result"] and task_data["result"]["msg_resposta"]:
+                    messages = task_data["result"]["msg_resposta"]
+                
+                # Atualizar a fila com as mensagens
+                if messages:
+                    logger.info(
+                        "Armazenando mensagens na fila de processamento",
+                        task_id=task_id,
+                        request_id=request_id,
+                        message_count=len(messages)
+                    )
+                    print(f"[{datetime.now().isoformat()}] ARMAZENANDO MENSAGENS: Salvando {len(messages)} mensagens na fila para o task_id {task_id}")
+                    
+                    try:
+                        await request_queue.update_one(
+                            {"_id": ObjectId(request_id)},
+                            {
+                                "$set": {
+                                    "messages": messages,
+                                    "message_count": len(messages)
+                                },
+                                "$push": {
+                                    "steps": {
+                                        "step": "messages_stored",
+                                        "timestamp": datetime.utcnow(),
+                                        "success": True,
+                                        "message": f"Armazenadas {len(messages)} mensagens da resposta",
+                                        "message_preview": messages[0][:50] + "..." if len(messages[0]) > 50 else messages[0]
+                                    }
+                                }
+                            }
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Erro ao armazenar mensagens na fila",
+                            task_id=task_id,
+                            request_id=request_id,
+                            error=str(e),
+                            error_type=type(e).__name__
+                        )
+                        print(f"[{datetime.now().isoformat()}] ERRO AO ARMAZENAR MENSAGENS: {str(e)}")
             
             # Processar resposta da task
             success = await self.process_task_response(task_data)
@@ -726,13 +793,16 @@ class SalesBuilderStatusChecker:
             return False
 
 
-async def process_sales_builder_task(task_id: str, settings=None) -> bool:
+async def process_sales_builder_task(task_id: str, settings=None, request_id=None, mongodb_uri=None, db_name=None) -> bool:
     """
     Função principal para processar uma task do Sales Builder.
     
     Args:
         task_id: ID da task a ser processada
         settings: Configurações da aplicação principal (opcional)
+        request_id: ID da requisição na fila (opcional)
+        mongodb_uri: URI de conexão com o MongoDB (opcional)
+        db_name: Nome do banco de dados (opcional)
         
     Returns:
         bool: True se o processamento foi bem-sucedido, False caso contrário
@@ -740,7 +810,8 @@ async def process_sales_builder_task(task_id: str, settings=None) -> bool:
     logger.info(
         "Iniciando processamento de task do Sales Builder",
         task_id=task_id,
-        settings_provided=settings is not None
+        settings_provided=settings is not None,
+        request_id=request_id
     )
     
     # Log no console
@@ -748,21 +819,89 @@ async def process_sales_builder_task(task_id: str, settings=None) -> bool:
     
     start_time = datetime.utcnow()
     
+    # Inicializar conexão com MongoDB para atualizar a fila se request_id for fornecido
+    request_queue = None
+    if request_id and mongodb_uri and db_name:
+        try:
+            mongodb_client = AsyncIOMotorClient(mongodb_uri)
+            db = mongodb_client[db_name]
+            request_queue = db["request_queue"]
+            
+            # Atualizar status na fila
+            await request_queue.update_one(
+                {"_id": ObjectId(request_id)},
+                {
+                    "$set": {"status": "task_processing_started"},
+                    "$push": {
+                        "steps": {
+                            "step": "task_processing_started",
+                            "timestamp": datetime.utcnow(),
+                            "success": True,
+                            "message": "Processamento da task iniciado"
+                        }
+                    }
+                }
+            )
+        except Exception as e:
+            logger.error(
+                "Erro ao conectar ao MongoDB para atualizar fila",
+                error=str(e),
+                error_type=type(e).__name__,
+                request_id=request_id
+            )
+    
     # Criar o verificador com as configurações fornecidas
     checker = SalesBuilderStatusChecker(settings=settings)
     try:
-        result = await checker.check_and_process_task(task_id)
+        # Atualizar status na fila
+        if request_queue is not None:
+            await request_queue.update_one(
+                {"_id": ObjectId(request_id)},
+                {
+                    "$set": {"status": "checking_task_status"},
+                    "$push": {
+                        "steps": {
+                            "step": "checking_task_status",
+                            "timestamp": datetime.utcnow(),
+                            "success": True,
+                            "message": "Verificando status da task"
+                        }
+                    }
+                }
+            )
+        
+        # Chamar check_and_process_task com os parâmetros da fila
+        result = await checker.check_and_process_task(task_id, request_queue, request_id)
         
         elapsed_time = (datetime.utcnow() - start_time).total_seconds()
         logger.info(
             "Processamento de task do Sales Builder concluído",
             task_id=task_id,
             result=result,
-            elapsed_time_seconds=elapsed_time
+            elapsed_time_seconds=elapsed_time,
+            request_id=request_id
         )
         
         # Log no console
         print(f"[{datetime.now().isoformat()}] VERIFICAÇÃO CONCLUÍDA: Task {task_id} processada {'com sucesso' if result else 'com falha'} em {elapsed_time:.2f} segundos")
+        
+        # Atualizar status na fila
+        if request_queue is not None:
+            await request_queue.update_one(
+                {"_id": ObjectId(request_id)},
+                {
+                    "$set": {"status": "task_processing_completed", "task_result": result},
+                    "$push": {
+                        "steps": {
+                            "step": "task_processing_completed",
+                            "timestamp": datetime.utcnow(),
+                            "success": result,
+                            "message": f"Processamento da task concluído {'com sucesso' if result else 'com falha'}",
+                            "elapsed_time_seconds": elapsed_time
+                        }
+                    }
+                }
+            )
         
         return result
     except Exception as e:
@@ -772,15 +911,39 @@ async def process_sales_builder_task(task_id: str, settings=None) -> bool:
             task_id=task_id,
             error=str(e),
             error_type=type(e).__name__,
-            elapsed_time_seconds=elapsed_time
+            elapsed_time_seconds=elapsed_time,
+            request_id=request_id
         )
         
         # Log no console
         print(f"[{datetime.now().isoformat()}] ERRO NA VERIFICAÇÃO: Falha ao processar task {task_id}: {str(e)}")
         
+        # Atualizar status na fila
+        if request_queue is not None:
+            await request_queue.update_one(
+                {"_id": ObjectId(request_id)},
+                {
+                    "$set": {"status": "task_processing_error"},
+                    "$push": {
+                        "steps": {
+                            "step": "task_processing_error",
+                            "timestamp": datetime.utcnow(),
+                            "success": False,
+                            "message": f"Erro durante o processamento: {str(e)}",
+                            "error_type": type(e).__name__,
+                            "elapsed_time_seconds": elapsed_time
+                        }
+                    }
+                }
+            )
+        
         return False
     finally:
         await checker.close()
+        
+        # Fechar conexão com MongoDB
+        if request_queue is not None and 'mongodb_client' in locals():
+            mongodb_client.close()
 
 
 # Exemplo de uso
