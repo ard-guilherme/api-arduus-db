@@ -122,6 +122,19 @@ class EvolutionAPI:
         for key, value in kwargs.items():
             payload[key] = value
         
+        # Configurar sessão com retry para problemas de SSL
+        retry_strategy = requests.adapters.Retry(
+            total=3,  # número total de tentativas
+            backoff_factor=1,  # fator de espera entre tentativas
+            status_forcelist=[429, 500, 502, 503, 504],  # códigos de status para retry
+            allowed_methods=["POST"],  # métodos permitidos para retry
+        )
+        
+        # Criar sessão com timeout maior e configuração de retry
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        
         try:
             # Log no console antes de enviar
             print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIANDO: Mensagem para {number} (tempo de digitação: {typing_time}ms)")
@@ -129,7 +142,13 @@ class EvolutionAPI:
             logging.info(f"[EVO_API] Enviando mensagem para {number}: '{text[:50]}...'")
             logging.debug(f"[EVO_API] URL: {url}, Payload: {json.dumps(payload)[:200]}...")
             
-            response = requests.post(url, json=payload, headers=self.headers, timeout=30)
+            # Usar a sessão com retry e timeout maior
+            response = session.post(
+                url, 
+                json=payload, 
+                headers=self.headers, 
+                timeout=60  # aumentar timeout para 60 segundos
+            )
             
             # Tratar status 200 e 201 como sucesso (201 = Created)
             if response.status_code in [200, 201]:
@@ -160,7 +179,7 @@ class EvolutionAPI:
                 # Não chamar raise_for_status() aqui para evitar exceção
                 return {"status": "error", "status_code": response.status_code, "message": error_msg}
         except requests.exceptions.Timeout:
-            error_msg = f"Timeout ao enviar mensagem para {number} após 30 segundos"
+            error_msg = f"Timeout ao enviar mensagem para {number} após 60 segundos"
             logging.error(f"[EVO_API] {error_msg}")
             print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
             return {"status": "error", "message": error_msg}
@@ -184,6 +203,9 @@ class EvolutionAPI:
             logging.error(f"[EVO_API] {error_msg}")
             print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
             return {"status": "error", "message": error_msg}
+        finally:
+            # Fechar a sessão
+            session.close()
 
 
     def send_status_message(self, type_content, content, **kwargs):

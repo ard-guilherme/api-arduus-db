@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson.objectid import ObjectId
+import requests
+import json
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -42,8 +44,115 @@ except ImportError:
                 logging.warning("Usando versão stub da EvolutionAPI porque o módulo não pôde ser importado")
             
             def send_text_message(self, number, text, **kwargs):
-                logging.warning(f"Stub: Enviando mensagem para {number}: {text[:50]}...")
-                return {"status": "error", "message": "EvolutionAPI não está disponível"}
+                url = f"https://{self.evo_subdomain}/message/sendText/{self.evo_instance}"
+                
+                # Log no console
+                print(f"[{datetime.now().isoformat()}] EVOLUTION API - PREPARANDO MENSAGEM: Para {number}")
+                
+                # Verificar se a API está configurada
+                if not self.is_configured:
+                    error_msg = "Evolution API não está configurada corretamente. Não é possível enviar mensagens."
+                    logging.error(error_msg)
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Configuração incompleta")
+                    return {"status": "error", "message": error_msg}
+                
+                # Calcular o tempo de digitação
+                typing_time = self.estimate_typing_time(text, typing_speed=207)
+                
+                payload = {
+                    "number": number,
+                    "text": text,
+                    "delay": typing_time
+                }
+                
+                # Adicionar opções adicionais
+                for key, value in kwargs.items():
+                    payload[key] = value
+                
+                # Configurar sessão com retry para problemas de SSL
+                retry_strategy = requests.adapters.Retry(
+                    total=3,  # número total de tentativas
+                    backoff_factor=1,  # fator de espera entre tentativas
+                    status_forcelist=[429, 500, 502, 503, 504],  # códigos de status para retry
+                    allowed_methods=["POST"],  # métodos permitidos para retry
+                )
+                
+                # Criar sessão com timeout maior e configuração de retry
+                session = requests.Session()
+                adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
+                session.mount("https://", adapter)
+                
+                try:
+                    # Log no console antes de enviar
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIANDO: Mensagem para {number} (tempo de digitação: {typing_time}ms)")
+                    
+                    logging.info(f"[EVO_API] Enviando mensagem para {number}: '{text[:50]}...'")
+                    logging.debug(f"[EVO_API] URL: {url}, Payload: {json.dumps(payload)[:200]}...")
+                    
+                    # Usar a sessão com retry e timeout maior
+                    response = session.post(
+                        url, 
+                        json=payload, 
+                        headers=self.headers, 
+                        timeout=60  # aumentar timeout para 60 segundos
+                    )
+                    
+                    # Tratar status 200 e 201 como sucesso (201 = Created)
+                    if response.status_code in [200, 201]:
+                        # Log no console após enviar com sucesso
+                        print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIADO: Status {response.status_code} para {number}")
+                        
+                        logging.info(f"[EVO_API] Mensagem enviada com sucesso para {number}. Status: {response.status_code}")
+                        try:
+                            response_data = response.json()
+                            logging.debug(f"[EVO_API] Resposta: {json.dumps(response_data)[:200]}...")
+                            
+                            # Verificar se a resposta contém algum indicador de erro
+                            if isinstance(response_data, dict) and response_data.get("error"):
+                                error_msg = response_data.get("error", {}).get("message", "Erro desconhecido na resposta")
+                                logging.error(f"[EVO_API] Erro na resposta: {error_msg}")
+                                print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                                return {"status": "error", "message": error_msg}
+                            
+                            return response_data
+                        except ValueError:
+                            # Se não conseguir parsear JSON, retorna um dicionário com a resposta em texto
+                            logging.warning(f"[EVO_API] Resposta não é um JSON válido: {response.text[:200]}...")
+                            return {"status": "success", "raw_response": response.text[:200]}
+                    else:
+                        error_msg = f"Falha ao enviar mensagem. Status: {response.status_code}, Resposta: {response.text[:200]}"
+                        logging.error(f"[EVO_API] {error_msg}")
+                        print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Resposta com status {response.status_code}")
+                        # Não chamar raise_for_status() aqui para evitar exceção
+                        return {"status": "error", "status_code": response.status_code, "message": error_msg}
+                except requests.exceptions.Timeout:
+                    error_msg = f"Timeout ao enviar mensagem para {number} após 60 segundos"
+                    logging.error(f"[EVO_API] {error_msg}")
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                    return {"status": "error", "message": error_msg}
+                except requests.exceptions.SSLError as e:
+                    error_msg = f"Erro SSL ao enviar mensagem para {number}: {str(e)}"
+                    logging.error(f"[EVO_API] {error_msg}")
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                    return {"status": "error", "message": error_msg}
+                except requests.exceptions.ConnectionError as e:
+                    error_msg = f"Erro de conexão ao enviar mensagem para {number}: {str(e)}"
+                    logging.error(f"[EVO_API] {error_msg}")
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                    return {"status": "error", "message": error_msg}
+                except requests.exceptions.RequestException as e:
+                    error_msg = f"Erro na requisição ao enviar mensagem para {number}: {str(e)}"
+                    logging.error(f"[EVO_API] {error_msg}")
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                    return {"status": "error", "message": error_msg}
+                except Exception as e:
+                    error_msg = f"Erro inesperado ao enviar mensagem para {number}: {str(e)}"
+                    logging.error(f"[EVO_API] {error_msg}")
+                    print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                    return {"status": "error", "message": error_msg}
+                finally:
+                    # Fechar a sessão
+                    session.close()
 
 # Configuração de logging com structlog
 def setup_logging():
@@ -673,7 +782,7 @@ class SalesBuilderStatusChecker:
                 )
                 
                 # Atualizar status na fila se disponível
-                if request_queue and request_id:
+                if request_queue is not None and request_id is not None:
                     await request_queue.update_one(
                         {"_id": ObjectId(request_id)},
                         {
@@ -743,7 +852,7 @@ class SalesBuilderStatusChecker:
                             )
                             
                             # Atualizar status na fila se disponível
-                            if request_queue and request_id:
+                            if request_queue is not None and request_id is not None:
                                 await request_queue.update_one(
                                     {"_id": ObjectId(request_id)},
                                     {
@@ -768,7 +877,7 @@ class SalesBuilderStatusChecker:
                         )
                         
                         # Atualizar status na fila se disponível
-                        if request_queue and request_id:
+                        if request_queue is not None and request_id is not None:
                             await request_queue.update_one(
                                 {"_id": ObjectId(request_id)},
                                 {
@@ -787,7 +896,7 @@ class SalesBuilderStatusChecker:
                         return False
                 else:
                     # Atualizar status na fila se disponível
-                    if request_queue and request_id:
+                    if request_queue is not None and request_id is not None:
                         await request_queue.update_one(
                             {"_id": ObjectId(request_id)},
                             {
@@ -857,7 +966,7 @@ class SalesBuilderStatusChecker:
             elapsed_time = (datetime.utcnow() - start_time).total_seconds()
             
             # Atualizar status na fila com base no resultado do processamento
-            if request_queue and request_id:
+            if request_queue is not None and request_id is not None:
                 if success:
                     await request_queue.update_one(
                         {"_id": ObjectId(request_id)},
@@ -911,7 +1020,7 @@ class SalesBuilderStatusChecker:
             )
             
             # Atualizar status na fila em caso de exceção
-            if request_queue and request_id:
+            if request_queue is not None and request_id is not None:
                 await request_queue.update_one(
                     {"_id": ObjectId(request_id)},
                     {
@@ -992,7 +1101,7 @@ async def process_sales_builder_task(task_id: str, settings=None, request_id=Non
     checker = SalesBuilderStatusChecker(settings=settings)
     try:
         # Atualizar status na fila
-        if request_queue is not None:
+        if request_queue is not None and request_id is not None:
             await request_queue.update_one(
                 {"_id": ObjectId(request_id)},
                 {
@@ -1024,7 +1133,7 @@ async def process_sales_builder_task(task_id: str, settings=None, request_id=Non
         print(f"[{datetime.now().isoformat()}] VERIFICAÇÃO CONCLUÍDA: Task {task_id} processada {'com sucesso' if result else 'com falha'} em {elapsed_time:.2f} segundos")
         
         # Atualizar status na fila
-        if request_queue is not None:
+        if request_queue is not None and request_id is not None:
             await request_queue.update_one(
                 {"_id": ObjectId(request_id)},
                 {
