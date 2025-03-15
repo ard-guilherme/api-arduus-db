@@ -104,9 +104,10 @@ class EvolutionAPI:
         
         # Verificar se a API está configurada
         if not self.is_configured:
-            logging.error("Evolution API não está configurada corretamente. Não é possível enviar mensagens.")
+            error_msg = "Evolution API não está configurada corretamente. Não é possível enviar mensagens."
+            logging.error(error_msg)
             print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Configuração incompleta")
-            return {"status": "error", "message": "Evolution API não está configurada corretamente"}
+            return {"status": "error", "message": error_msg}
         
         # Calcular o tempo de digitação
         typing_time = self.estimate_typing_time(text, typing_speed=207)
@@ -128,35 +129,61 @@ class EvolutionAPI:
             logging.info(f"[EVO_API] Enviando mensagem para {number}: '{text[:50]}...'")
             logging.debug(f"[EVO_API] URL: {url}, Payload: {json.dumps(payload)[:200]}...")
             
-            response = requests.post(url, json=payload, headers=self.headers)
-            
-            # Log no console após enviar
-            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIADO: Status {response.status_code} para {number}")
+            response = requests.post(url, json=payload, headers=self.headers, timeout=30)
             
             # Tratar status 200 e 201 como sucesso (201 = Created)
             if response.status_code in [200, 201]:
+                # Log no console após enviar com sucesso
+                print(f"[{datetime.now().isoformat()}] EVOLUTION API - ENVIADO: Status {response.status_code} para {number}")
+                
                 logging.info(f"[EVO_API] Mensagem enviada com sucesso para {number}. Status: {response.status_code}")
                 try:
                     response_data = response.json()
                     logging.debug(f"[EVO_API] Resposta: {json.dumps(response_data)[:200]}...")
+                    
+                    # Verificar se a resposta contém algum indicador de erro
+                    if isinstance(response_data, dict) and response_data.get("error"):
+                        error_msg = response_data.get("error", {}).get("message", "Erro desconhecido na resposta")
+                        logging.error(f"[EVO_API] Erro na resposta: {error_msg}")
+                        print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+                        return {"status": "error", "message": error_msg}
+                    
                     return response_data
                 except ValueError:
                     # Se não conseguir parsear JSON, retorna um dicionário com a resposta em texto
                     logging.warning(f"[EVO_API] Resposta não é um JSON válido: {response.text[:200]}...")
                     return {"status": "success", "raw_response": response.text[:200]}
             else:
-                logging.error(f"[EVO_API] Falha ao enviar mensagem. Status: {response.status_code}, Resposta: {response.text[:200]}...")
-                print(f"[{datetime.now().isoformat()}] EVOLUTION API - ALERTA: Resposta inesperada {response.status_code}")
+                error_msg = f"Falha ao enviar mensagem. Status: {response.status_code}, Resposta: {response.text[:200]}"
+                logging.error(f"[EVO_API] {error_msg}")
+                print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Resposta com status {response.status_code}")
                 # Não chamar raise_for_status() aqui para evitar exceção
-                return {"status": "error", "status_code": response.status_code, "message": response.text[:200]}
+                return {"status": "error", "status_code": response.status_code, "message": error_msg}
+        except requests.exceptions.Timeout:
+            error_msg = f"Timeout ao enviar mensagem para {number} após 30 segundos"
+            logging.error(f"[EVO_API] {error_msg}")
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+            return {"status": "error", "message": error_msg}
+        except requests.exceptions.SSLError as e:
+            error_msg = f"Erro SSL ao enviar mensagem para {number}: {str(e)}"
+            logging.error(f"[EVO_API] {error_msg}")
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+            return {"status": "error", "message": error_msg}
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Erro de conexão ao enviar mensagem para {number}: {str(e)}"
+            logging.error(f"[EVO_API] {error_msg}")
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+            return {"status": "error", "message": error_msg}
         except requests.exceptions.RequestException as e:
-            logging.error(f"[EVO_API] Erro na requisição: {str(e)}")
-            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Falha ao enviar mensagem para {number}: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            error_msg = f"Erro na requisição ao enviar mensagem para {number}: {str(e)}"
+            logging.error(f"[EVO_API] {error_msg}")
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+            return {"status": "error", "message": error_msg}
         except Exception as e:
-            logging.error(f"[EVO_API] Erro inesperado: {str(e)}")
-            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: Exceção inesperada: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            error_msg = f"Erro inesperado ao enviar mensagem para {number}: {str(e)}"
+            logging.error(f"[EVO_API] {error_msg}")
+            print(f"[{datetime.now().isoformat()}] EVOLUTION API - ERRO: {error_msg}")
+            return {"status": "error", "message": error_msg}
 
 
     def send_status_message(self, type_content, content, **kwargs):

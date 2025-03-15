@@ -590,6 +590,10 @@ class SalesBuilderStatusChecker:
             # Log no console antes de enviar mensagens
             print(f"[{datetime.now().isoformat()}] INICIANDO ENVIO: Preparando para enviar {len(messages)} mensagens para {whatsapp}")
             
+            # Rastrear o sucesso do envio de mensagens
+            all_messages_sent_successfully = True
+            successful_messages_count = 0
+            
             # Enviar cada mensagem para o WhatsApp
             for i, message in enumerate(messages, 1):
                 if message and isinstance(message, str):
@@ -604,24 +608,31 @@ class SalesBuilderStatusChecker:
                     
                     # Verificar se o resultado indica erro
                     if isinstance(result_send, dict) and result_send.get("status") == "error":
-                        logger.error(f"Erro ao enviar mensagem para {whatsapp}: {result_send.get('message')}")
-                        print(f"[{datetime.now().isoformat()}] ERRO AO ENVIAR MENSAGEM: {result_send.get('message')}")
+                        error_message = result_send.get('message', 'Erro desconhecido')
+                        logger.error(f"Erro ao enviar mensagem para {whatsapp}: {error_message}")
+                        print(f"[{datetime.now().isoformat()}] ERRO AO ENVIAR MENSAGEM: {error_message}")
+                        all_messages_sent_successfully = False
                         # Continuar tentando enviar as próximas mensagens
                         continue
                     
-                    # Log no console após enviar cada mensagem
+                    # Log no console após enviar cada mensagem com sucesso
                     print(f"[{datetime.now().isoformat()}] MENSAGEM ENVIADA {i}/{len(messages)}: Para {whatsapp}")
+                    successful_messages_count += 1
                     
                     # Inserir histórico de chat no MongoDB
                     await self.insert_chat_history(whatsapp, message, task_data)
                     
                     logger.info(f"Mensagem enviada para {whatsapp}: {message[:50]}...")
             
-            # Log no console após enviar todas as mensagens
-            print(f"[{datetime.now().isoformat()}] ENVIO CONCLUÍDO: Todas as {len(messages)} mensagens foram enviadas para {whatsapp}")
-            
-            logger.info(f"Processamento da task {task_id} concluído com sucesso")
-            return True
+            # Log no console após tentar enviar todas as mensagens
+            if all_messages_sent_successfully:
+                print(f"[{datetime.now().isoformat()}] ENVIO CONCLUÍDO: Todas as {len(messages)} mensagens foram enviadas para {whatsapp}")
+                logger.info(f"Processamento da task {task_id} concluído com sucesso")
+                return True
+            else:
+                print(f"[{datetime.now().isoformat()}] ENVIO PARCIAL: Apenas {successful_messages_count} de {len(messages)} mensagens foram enviadas para {whatsapp}")
+                logger.warning(f"Processamento da task {task_id} concluído parcialmente. Apenas {successful_messages_count} de {len(messages)} mensagens foram enviadas.")
+                return False
             
         except Exception as e:
             logger.error(f"Erro ao processar resposta da task: {str(e)}")
@@ -660,14 +671,33 @@ class SalesBuilderStatusChecker:
                     task_id=task_id,
                     elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
                 )
+                
+                # Atualizar status na fila se disponível
+                if request_queue and request_id:
+                    await request_queue.update_one(
+                        {"_id": ObjectId(request_id)},
+                        {
+                            "$set": {"status": "task_check_failed"},
+                            "$push": {
+                                "steps": {
+                                    "step": "task_check_failed",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": False,
+                                    "message": "Não foi possível obter dados da task"
+                                }
+                            }
+                        }
+                    )
+                
                 return False
             
             # Verificar se há erro na resposta
             if "error" in task_data:
+                error_message = task_data.get('error', 'Erro desconhecido')
                 logger.error(
                     "Erro ao verificar status da task",
                     task_id=task_id,
-                    error=task_data.get('error'),
+                    error=error_message,
                     elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
                 )
                 
@@ -711,6 +741,24 @@ class SalesBuilderStatusChecker:
                                 error=task_data.get('error'),
                                 elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
                             )
+                            
+                            # Atualizar status na fila se disponível
+                            if request_queue and request_id:
+                                await request_queue.update_one(
+                                    {"_id": ObjectId(request_id)},
+                                    {
+                                        "$set": {"status": "api_key_error"},
+                                        "$push": {
+                                            "steps": {
+                                                "step": "api_key_error",
+                                                "timestamp": datetime.utcnow(),
+                                                "success": False,
+                                                "message": f"Erro de autorização persistente: {task_data.get('error')}"
+                                            }
+                                        }
+                                    }
+                                )
+                            
                             return False
                     else:
                         logger.error(
@@ -718,8 +766,43 @@ class SalesBuilderStatusChecker:
                             task_id=task_id,
                             elapsed_time_seconds=(datetime.utcnow() - start_time).total_seconds()
                         )
+                        
+                        # Atualizar status na fila se disponível
+                        if request_queue and request_id:
+                            await request_queue.update_one(
+                                {"_id": ObjectId(request_id)},
+                                {
+                                    "$set": {"status": "api_key_error"},
+                                    "$push": {
+                                        "steps": {
+                                            "step": "api_key_error",
+                                            "timestamp": datetime.utcnow(),
+                                            "success": False,
+                                            "message": "Não foi possível encontrar uma chave de API alternativa"
+                                        }
+                                    }
+                                }
+                            )
+                        
                         return False
                 else:
+                    # Atualizar status na fila se disponível
+                    if request_queue and request_id:
+                        await request_queue.update_one(
+                            {"_id": ObjectId(request_id)},
+                            {
+                                "$set": {"status": "task_check_error"},
+                                "$push": {
+                                    "steps": {
+                                        "step": "task_check_error",
+                                        "timestamp": datetime.utcnow(),
+                                        "success": False,
+                                        "message": f"Erro ao verificar status: {error_message}"
+                                    }
+                                }
+                            }
+                        )
+                    
                     return False
             
             # Armazenar a msg_resposta na tabela da fila de processamento se disponível
@@ -772,6 +855,42 @@ class SalesBuilderStatusChecker:
             success = await self.process_task_response(task_data)
             
             elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+            
+            # Atualizar status na fila com base no resultado do processamento
+            if request_queue and request_id:
+                if success:
+                    await request_queue.update_one(
+                        {"_id": ObjectId(request_id)},
+                        {
+                            "$set": {"status": "completed"},
+                            "$push": {
+                                "steps": {
+                                    "step": "messages_sent",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": True,
+                                    "message": f"Todas as mensagens foram enviadas com sucesso",
+                                    "elapsed_time_seconds": elapsed_time
+                                }
+                            }
+                        }
+                    )
+                else:
+                    await request_queue.update_one(
+                        {"_id": ObjectId(request_id)},
+                        {
+                            "$set": {"status": "message_send_failed"},
+                            "$push": {
+                                "steps": {
+                                    "step": "message_send_failed",
+                                    "timestamp": datetime.utcnow(),
+                                    "success": False,
+                                    "message": "Falha ao enviar uma ou mais mensagens",
+                                    "elapsed_time_seconds": elapsed_time
+                                }
+                            }
+                        }
+                    )
+            
             logger.info(
                 "Processamento da task concluído",
                 task_id=task_id,
@@ -790,6 +909,25 @@ class SalesBuilderStatusChecker:
                 error_type=type(e).__name__,
                 elapsed_time_seconds=elapsed_time
             )
+            
+            # Atualizar status na fila em caso de exceção
+            if request_queue and request_id:
+                await request_queue.update_one(
+                    {"_id": ObjectId(request_id)},
+                    {
+                        "$set": {"status": "processing_exception"},
+                        "$push": {
+                            "steps": {
+                                "step": "processing_exception",
+                                "timestamp": datetime.utcnow(),
+                                "success": False,
+                                "message": f"Exceção durante o processamento: {str(e)}",
+                                "elapsed_time_seconds": elapsed_time
+                            }
+                        }
+                    }
+                )
+            
             return False
 
 
